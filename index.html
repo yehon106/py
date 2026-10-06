@@ -4,75 +4,48 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Online Python</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #e9eef6;
-    --panel: #ffffff;
-    --ink: #1b2433;
-    --muted: #6a768a;
-    --line: #cfd8e6;
-    --blue: #2f5bea;
-    --yellow: #f5c842;
-    --err: #c62f3e;
-    --out-bg: #14203a;
-    --out-ink: #e6edf9;
+    --bg: #e9eef6; --panel: #ffffff; --ink: #1b2433; --muted: #6a768a;
+    --line: #cfd8e6; --blue: #2f5bea; --yellow: #f5c842;
+    --out-bg: #14203a; --out-ink: #e6edf9;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    background: var(--bg);
-    color: var(--ink);
-    font-family: "Space Grotesk", system-ui, sans-serif;
-    display: flex;
-    flex-direction: column;
+    background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
   }
   header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
-    background: var(--panel);
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
   }
   h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
-  .logo {
-    width: 26px; height: 26px; border-radius: 6px;
-    background: linear-gradient(135deg, var(--blue) 50%, var(--yellow) 50%);
-  }
+  .logo { width: 26px; height: 26px; border-radius: 6px; background: linear-gradient(135deg, var(--blue) 50%, var(--yellow) 50%); }
   #status { margin-left: auto; font-size: 14px; color: var(--muted); }
   button {
-    font: inherit; font-weight: 700; cursor: pointer;
-    border: 1px solid var(--ink); background: var(--panel); color: var(--ink);
-    padding: 8px 16px; border-radius: 8px;
+    font: inherit; font-weight: 700; cursor: pointer; border: 1px solid var(--ink);
+    background: var(--panel); color: var(--ink); padding: 8px 16px; border-radius: 8px;
   }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  button:focus-visible, textarea:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+  button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
   #run { background: var(--yellow); }
-  main {
-    flex: 1; min-height: 0;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-    padding: 12px;
-  }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }
   @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
   section { display: flex; flex-direction: column; min-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
-  .bar { padding: 8px 14px; font-size: 14px; font-weight: 500; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--muted); display: flex; align-items: center; gap: 8px; }
-  textarea, pre {
-    flex: 1; margin: 0; border: 0; resize: none; width: 100%;
-    padding: 14px; font: 400 15px/1.55 "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-    tab-size: 4; overflow: auto;
-  }
+  .bar { padding: 8px 14px; font-size: 14px; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .mono { font: 400 15px/1.55 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  textarea, pre { flex: 1; margin: 0; border: 0; resize: none; width: 100%; padding: 14px; tab-size: 4; overflow: auto; }
   textarea { background: var(--panel); color: var(--ink); }
   pre { background: var(--out-bg); color: var(--out-ink); white-space: pre-wrap; word-break: break-word; }
   pre .err { color: #ff8b97; }
   pre .info { color: #8fa3c7; }
+  #inputRow { display: none; background: var(--out-bg); border-top: 1px solid #2a3a5e; padding: 8px 14px; gap: 8px; align-items: center; color: #8fa3c7; }
+  #inputRow.show { display: flex; }
+  #inputEl { flex: 1; background: #0e1830; color: var(--out-ink); border: 1px solid #2a3a5e; border-radius: 6px; padding: 8px 10px; }
+  #send { padding: 6px 14px; background: var(--yellow); }
   #clear { margin-left: auto; padding: 2px 10px; font-size: 13px; font-weight: 500; }
-  @media (prefers-reduced-motion: no-preference) {
-    #status.loading::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 8px; border-radius: 50%; background: var(--yellow); animation: pulse 1s infinite alternate; }
-    @keyframes pulse { to { opacity: .2; } }
-  }
 </style>
 </head>
 <body>
@@ -80,21 +53,82 @@
   <div class="logo" aria-hidden="true"></div>
   <h1>Online Python</h1>
   <button id="run" disabled>Run (Ctrl+Enter)</button>
+  <button id="stop" disabled>Stop</button>
   <button id="reset">Reset code</button>
-  <span id="status" class="loading">Loading Python</span>
+  <span id="status">Loading Python...</span>
 </header>
 <main>
   <section>
     <div class="bar">main.py</div>
-    <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code"></textarea>
+    <textarea id="code" class="mono" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code"></textarea>
   </section>
   <section>
     <div class="bar">Output <button id="clear">Clear</button></div>
-    <pre id="out" aria-live="polite"></pre>
+    <pre id="out" class="mono" aria-live="polite"></pre>
+    <div id="inputRow" class="mono">
+      <span>input:</span>
+      <input id="inputEl" class="mono" autocomplete="off" spellcheck="false" aria-label="Python input">
+      <button id="send">Send</button>
+    </div>
   </section>
 </main>
 
-<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script id="worker-src" type="text/plain">
+importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
+let pyodide, i32, bytes;
+const dec = new TextDecoder();
+
+function mk(err) {
+  const b = [];
+  const d = new TextDecoder();
+  const flush = () => {
+    if (b.length) postMessage({ type: "out", err, text: d.decode(new Uint8Array(b.splice(0)), { stream: true }) });
+  };
+  return { flush, handle: (c) => { b.push(c & 255); if ((c & 255) === 10) flush(); } };
+}
+const O = mk(false), E = mk(true);
+
+onmessage = async (ev) => {
+  const m = ev.data;
+  if (m.type === "init") {
+    i32 = new Int32Array(m.sab);
+    bytes = new Uint8Array(m.sab, 8);
+    try {
+      pyodide = await loadPyodide();
+      pyodide.setStdout({ raw: O.handle });
+      pyodide.setStderr({ raw: E.handle });
+      pyodide.setStdin({
+        stdin: () => {
+          O.flush(); E.flush();
+          postMessage({ type: "input" });
+          Atomics.wait(i32, 0, 0);
+          const n = i32[1];
+          const s = dec.decode(bytes.slice(0, n));
+          Atomics.store(i32, 0, 0);
+          return s;
+        },
+      });
+      postMessage({ type: "ready", version: pyodide.version });
+    } catch (e) {
+      postMessage({ type: "fail", text: String(e) });
+    }
+  } else if (m.type === "run") {
+    const g = pyodide.globals.get("dict")();
+    try {
+      await pyodide.loadPackagesFromImports(m.code);
+      await pyodide.runPythonAsync(m.code, { globals: g });
+    } catch (e) {
+      O.flush();
+      postMessage({ type: "out", err: true, text: String(e.message || e) + "\n" });
+    } finally {
+      g.destroy();
+      O.flush(); E.flush();
+      postMessage({ type: "done" });
+    }
+  }
+};
+</script>
+
 <script>
   const DEFAULT_CODE = `name = input("Your name? ")
 print(f"Hello, {name}!")
@@ -104,7 +138,8 @@ for i in range(1, 6):
 `;
   const KEY = "online-python-code";
   const $ = (id) => document.getElementById(id);
-  const codeEl = $("code"), outEl = $("out"), runBtn = $("run"), statusEl = $("status");
+  const codeEl = $("code"), outEl = $("out"), runBtn = $("run"), stopBtn = $("stop"),
+        statusEl = $("status"), inputRow = $("inputRow"), inputEl = $("inputEl");
 
   try { codeEl.value = localStorage.getItem(KEY) || DEFAULT_CODE; } catch { codeEl.value = DEFAULT_CODE; }
   codeEl.addEventListener("input", () => { try { localStorage.setItem(KEY, codeEl.value); } catch {} });
@@ -117,44 +152,66 @@ for i in range(1, 6):
     outEl.scrollTop = outEl.scrollHeight;
   }
 
-  let pyodide;
-  (async () => {
-    try {
-      pyodide = await loadPyodide({
-        stdout: (s) => write(s + "\n"),
-        stderr: (s) => write(s + "\n", "err"),
-        stdin: () => {
-          const v = window.prompt("Python input():");
-          if (v === null) return "";
-          write(v + "\n", "info");
-          return v;
-        },
-      });
-      statusEl.textContent = "Python " + pyodide.runPython("import sys; sys.version.split()[0]") + " ready";
-      statusEl.classList.remove("loading");
-      runBtn.disabled = false;
-    } catch (e) {
-      statusEl.textContent = "Failed to load Python. Check your connection and reload.";
-      statusEl.classList.remove("loading");
-    }
-  })();
+  let worker, i32, bytes;
 
-  async function run() {
-    if (!pyodide || runBtn.disabled) return;
-    runBtn.disabled = true;
-    write(">>> running\n", "info");
-    try {
-      await pyodide.loadPackagesFromImports(codeEl.value);
-      await pyodide.runPythonAsync(codeEl.value);
-      write(">>> done\n", "info");
-    } catch (e) {
-      write(String(e.message || e) + "\n", "err");
-    } finally {
+  function hideInput() { inputRow.classList.remove("show"); inputEl.value = ""; }
+
+  function start() {
+    if (!crossOriginIsolated) {
+      statusEl.textContent = "Missing vercel.json headers. Upload vercel.json and redeploy.";
+      return;
+    }
+    if (worker) worker.terminate();
+    const sab = new SharedArrayBuffer(8 + 65536);
+    i32 = new Int32Array(sab);
+    bytes = new Uint8Array(sab, 8);
+    const url = URL.createObjectURL(new Blob([$("worker-src").textContent], { type: "text/javascript" }));
+    worker = new Worker(url);
+    worker.onmessage = onMsg;
+    worker.postMessage({ type: "init", sab });
+    statusEl.textContent = "Loading Python...";
+    runBtn.disabled = true; stopBtn.disabled = true; hideInput();
+  }
+
+  function onMsg(ev) {
+    const m = ev.data;
+    if (m.type === "ready") {
+      statusEl.textContent = "Python " + m.version + " ready";
       runBtn.disabled = false;
+    } else if (m.type === "fail") {
+      statusEl.textContent = "Failed to load Python. Check your connection and reload.";
+    } else if (m.type === "out") {
+      write(m.text, m.err ? "err" : "");
+    } else if (m.type === "input") {
+      inputRow.classList.add("show");
+      inputEl.focus();
+    } else if (m.type === "done") {
+      write(">>> done\n", "info");
+      runBtn.disabled = false; stopBtn.disabled = true; hideInput();
     }
   }
 
+  function run() {
+    if (runBtn.disabled) return;
+    runBtn.disabled = true; stopBtn.disabled = false;
+    write(">>> running\n", "info");
+    worker.postMessage({ type: "run", code: codeEl.value });
+  }
+
+  function send() {
+    const enc = new TextEncoder().encode(inputEl.value).slice(0, 65536);
+    write(inputEl.value + "\n", "info");
+    bytes.set(enc);
+    i32[1] = enc.length;
+    Atomics.store(i32, 0, 1);
+    Atomics.notify(i32, 0);
+    hideInput();
+  }
+
   runBtn.addEventListener("click", run);
+  stopBtn.addEventListener("click", () => { write(">>> stopped\n", "info"); start(); });
+  $("send").addEventListener("click", send);
+  inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
   $("clear").addEventListener("click", () => { outEl.textContent = ""; });
   $("reset").addEventListener("click", () => {
     codeEl.value = DEFAULT_CODE;
@@ -165,11 +222,12 @@ for i in range(1, 6):
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); return; }
     if (e.key === "Tab") {
       e.preventDefault();
-      const s = codeEl.selectionStart, end = codeEl.selectionEnd;
-      codeEl.setRangeText("    ", s, end, "end");
+      codeEl.setRangeText("    ", codeEl.selectionStart, codeEl.selectionEnd, "end");
       codeEl.dispatchEvent(new Event("input"));
     }
   });
+
+  start();
 </script>
 </body>
 </html>
