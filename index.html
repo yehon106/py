@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Online Python</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #e9eef6;
+    --panel: #ffffff;
+    --ink: #1b2433;
+    --muted: #6a768a;
+    --line: #cfd8e6;
+    --blue: #2f5bea;
+    --yellow: #f5c842;
+    --err: #c62f3e;
+    --out-bg: #14203a;
+    --out-ink: #e6edf9;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .logo {
+    width: 26px; height: 26px; border-radius: 6px;
+    background: linear-gradient(135deg, var(--blue) 50%, var(--yellow) 50%);
+  }
+  #status { margin-left: auto; font-size: 14px; color: var(--muted); }
+  button {
+    font: inherit; font-weight: 700; cursor: pointer;
+    border: 1px solid var(--ink); background: var(--panel); color: var(--ink);
+    padding: 8px 16px; border-radius: 8px;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:focus-visible, textarea:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+  #run { background: var(--yellow); }
+  main {
+    flex: 1; min-height: 0;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    padding: 12px;
+  }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
+  section { display: flex; flex-direction: column; min-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .bar { padding: 8px 14px; font-size: 14px; font-weight: 500; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  textarea, pre {
+    flex: 1; margin: 0; border: 0; resize: none; width: 100%;
+    padding: 14px; font: 400 15px/1.55 "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    tab-size: 4; overflow: auto;
+  }
+  textarea { background: var(--panel); color: var(--ink); }
+  pre { background: var(--out-bg); color: var(--out-ink); white-space: pre-wrap; word-break: break-word; }
+  pre .err { color: #ff8b97; }
+  pre .info { color: #8fa3c7; }
+  #clear { margin-left: auto; padding: 2px 10px; font-size: 13px; font-weight: 500; }
+  @media (prefers-reduced-motion: no-preference) {
+    #status.loading::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 8px; border-radius: 50%; background: var(--yellow); animation: pulse 1s infinite alternate; }
+    @keyframes pulse { to { opacity: .2; } }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" aria-hidden="true"></div>
+  <h1>Online Python</h1>
+  <button id="run" disabled>Run (Ctrl+Enter)</button>
+  <button id="reset">Reset code</button>
+  <span id="status" class="loading">Loading Python</span>
+</header>
+<main>
+  <section>
+    <div class="bar">main.py</div>
+    <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code"></textarea>
+  </section>
+  <section>
+    <div class="bar">Output <button id="clear">Clear</button></div>
+    <pre id="out" aria-live="polite"></pre>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+  const DEFAULT_CODE = `name = input("Your name? ")
+print(f"Hello, {name}!")
+
+for i in range(1, 6):
+    print(i, "squared is", i * i)
+`;
+  const KEY = "online-python-code";
+  const $ = (id) => document.getElementById(id);
+  const codeEl = $("code"), outEl = $("out"), runBtn = $("run"), statusEl = $("status");
+
+  try { codeEl.value = localStorage.getItem(KEY) || DEFAULT_CODE; } catch { codeEl.value = DEFAULT_CODE; }
+  codeEl.addEventListener("input", () => { try { localStorage.setItem(KEY, codeEl.value); } catch {} });
+
+  function write(text, cls) {
+    const span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = text;
+    outEl.appendChild(span);
+    outEl.scrollTop = outEl.scrollHeight;
+  }
+
+  let pyodide;
+  (async () => {
+    try {
+      pyodide = await loadPyodide({
+        stdout: (s) => write(s + "\n"),
+        stderr: (s) => write(s + "\n", "err"),
+        stdin: () => {
+          const v = window.prompt("Python input():");
+          if (v === null) return "";
+          write(v + "\n", "info");
+          return v;
+        },
+      });
+      statusEl.textContent = "Python " + pyodide.runPython("import sys; sys.version.split()[0]") + " ready";
+      statusEl.classList.remove("loading");
+      runBtn.disabled = false;
+    } catch (e) {
+      statusEl.textContent = "Failed to load Python. Check your connection and reload.";
+      statusEl.classList.remove("loading");
+    }
+  })();
+
+  async function run() {
+    if (!pyodide || runBtn.disabled) return;
+    runBtn.disabled = true;
+    write(">>> running\n", "info");
+    try {
+      await pyodide.loadPackagesFromImports(codeEl.value);
+      await pyodide.runPythonAsync(codeEl.value);
+      write(">>> done\n", "info");
+    } catch (e) {
+      write(String(e.message || e) + "\n", "err");
+    } finally {
+      runBtn.disabled = false;
+    }
+  }
+
+  runBtn.addEventListener("click", run);
+  $("clear").addEventListener("click", () => { outEl.textContent = ""; });
+  $("reset").addEventListener("click", () => {
+    codeEl.value = DEFAULT_CODE;
+    try { localStorage.setItem(KEY, DEFAULT_CODE); } catch {}
+  });
+
+  codeEl.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); return; }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const s = codeEl.selectionStart, end = codeEl.selectionEnd;
+      codeEl.setRangeText("    ", s, end, "end");
+      codeEl.dispatchEvent(new Event("input"));
+    }
+  });
+</script>
+</body>
+</html>
