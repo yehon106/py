@@ -3,67 +3,89 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Online Python</title>
+<title>Pyro - Online Python</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#14171c">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root {
-    --bg: #e9eef6; --panel: #ffffff; --ink: #1b2433; --muted: #6a768a;
-    --line: #cfd8e6; --blue: #2f5bea; --yellow: #f5c842;
-    --out-bg: #14203a; --out-ink: #e6edf9;
+    --bg: #14171c; --bar: #1b1f26; --edit: #1d2128; --line: #2b313b;
+    --ink: #e3e8ef; --muted: #8590a2; --accent: #19b5c8; --accent-ink: #06222a;
+    --out: #0f1216; --err: #ff7b8a; --info: #6f7e96;
+    --k: #c792ea; --b: #82aaff; --s: #f0c674; --n: #f78c6c; --c: #5c6773;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
-  body {
-    background: var(--bg); color: var(--ink);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    display: flex; flex-direction: column;
-  }
-  header {
-    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
-    border-bottom: 1px solid var(--line); background: var(--panel);
-  }
-  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
-  .logo { width: 26px; height: 26px; border-radius: 6px; background: linear-gradient(135deg, var(--blue) 50%, var(--yellow) 50%); }
-  #status { margin-left: auto; font-size: 14px; color: var(--muted); }
-  button {
-    font: inherit; font-weight: 700; cursor: pointer; border: 1px solid var(--ink);
-    background: var(--panel); color: var(--ink); padding: 8px 16px; border-radius: 8px;
-  }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
-  #run { background: var(--yellow); }
-  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
-  section { display: flex; flex-direction: column; min-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
-  .bar { padding: 8px 14px; font-size: 14px; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--muted); display: flex; align-items: center; gap: 8px; }
-  .mono { font: 400 15px/1.55 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
-  textarea, pre { flex: 1; margin: 0; border: 0; resize: none; width: 100%; padding: 14px; tab-size: 4; overflow: auto; }
-  textarea { background: var(--panel); color: var(--ink); }
-  pre { background: var(--out-bg); color: var(--out-ink); white-space: pre-wrap; word-break: break-word; }
-  pre .err { color: #ff8b97; }
-  pre .info { color: #8fa3c7; }
-  #inputRow { display: none; background: var(--out-bg); border-top: 1px solid #2a3a5e; padding: 8px 14px; gap: 8px; align-items: center; color: #8fa3c7; }
+  body { background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bar); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .brand { font-weight: 800; font-size: 20px; letter-spacing: -0.02em; margin-right: 10px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 8px 0 0 -3px var(--s); margin-right: 6px; }
+  button { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 7px 14px; border-radius: 6px; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 7px 22px; }
+  #status { margin-left: auto; font-size: 13px; color: var(--muted); }
+
+  main { flex: 1; min-height: 0; display: flex; }
+  main[data-layout="right"]  { flex-direction: row; }
+  main[data-layout="left"]   { flex-direction: row-reverse; }
+  main[data-layout="bottom"] { flex-direction: column; }
+  main[data-layout="top"]    { flex-direction: column-reverse; }
+  section { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #editorSec { flex: 1 1 0; }
+  #outSec { flex: 0 0 50%; }
+  #resizer { flex: 0 0 7px; background: var(--line); touch-action: none; }
+  #resizer:hover, #resizer.drag { background: var(--accent); }
+  main[data-layout="right"] #resizer, main[data-layout="left"] #resizer { cursor: col-resize; }
+  main[data-layout="top"] #resizer, main[data-layout="bottom"] #resizer { cursor: row-resize; }
+  main.dragging { user-select: none; }
+
+  .tab { padding: 8px 14px; font-size: 13px; color: var(--muted); background: var(--bar); border-bottom: 1px solid var(--line); display: flex; align-items: center; }
+  .tab b { color: var(--ink); font-weight: 600; border-bottom: 2px solid var(--accent); padding-bottom: 6px; margin-bottom: -9px; }
+  #clear { margin-left: auto; padding: 2px 10px; font-size: 12px; }
+  .mono { font: 400 14.5px/1.6 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; tab-size: 4; }
+  .editor { flex: 1; min-height: 0; display: flex; background: var(--edit); }
+  #gutter { width: 52px; padding: 14px 10px 14px 0; text-align: right; color: #566074; overflow: hidden; user-select: none; white-space: pre; border-right: 1px solid var(--line); }
+  .codewrap { position: relative; flex: 1; min-width: 0; }
+  #hl, #code { position: absolute; inset: 0; margin: 0; padding: 14px 14px 40px 14px; white-space: pre; border: 0; }
+  #hl { overflow: hidden; pointer-events: none; color: var(--ink); }
+  #code { background: transparent; color: transparent; caret-color: var(--ink); resize: none; overflow: auto; width: 100%; height: 100%; }
+  #code::selection { background: #2f4a6b; color: transparent; }
+  #hl .k { color: var(--k); } #hl .b { color: var(--b); } #hl .s { color: var(--s); }
+  #hl .n { color: var(--n); } #hl .c { color: var(--c); font-style: italic; }
+  #out { flex: 1; margin: 0; padding: 14px; background: var(--out); overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  #out .err { color: var(--err); } #out .info { color: var(--info); }
+  #inputRow { display: none; background: var(--out); border-top: 1px solid var(--line); padding: 8px 14px; gap: 8px; align-items: center; color: var(--muted); }
   #inputRow.show { display: flex; }
-  #inputEl { flex: 1; background: #0e1830; color: var(--out-ink); border: 1px solid #2a3a5e; border-radius: 6px; padding: 8px 10px; }
-  #send { padding: 6px 14px; background: var(--yellow); }
-  #clear { margin-left: auto; padding: 2px 10px; font-size: 13px; font-weight: 500; }
+  #inputEl { flex: 1; min-width: 0; background: var(--edit); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+  #send { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 6px 14px; }
 </style>
 </head>
 <body>
 <header>
-  <div class="logo" aria-hidden="true"></div>
-  <h1>Online Python</h1>
-  <button id="run" disabled>Run (Ctrl+Enter)</button>
+  <div class="brand"><span class="dot" aria-hidden="true"></span>pyro</div>
+  <button id="run" disabled>Run</button>
   <button id="stop" disabled>Stop</button>
-  <button id="reset">Reset code</button>
+  <button id="download">Download</button>
+  <button id="rotate" title="Move the output panel">Output: Right</button>
+  <button id="reset">Reset</button>
   <span id="status">Loading Python...</span>
 </header>
-<main>
-  <section>
-    <div class="bar">main.py</div>
-    <textarea id="code" class="mono" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code"></textarea>
+<main id="main" data-layout="right">
+  <section id="editorSec">
+    <div class="tab"><b>main.py</b></div>
+    <div class="editor">
+      <div id="gutter" class="mono" aria-hidden="true"></div>
+      <div class="codewrap">
+        <pre id="hl" class="mono" aria-hidden="true"></pre>
+        <textarea id="code" class="mono" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code (Ctrl+Enter to run)"></textarea>
+      </div>
+    </div>
   </section>
-  <section>
-    <div class="bar">Output <button id="clear">Clear</button></div>
+  <div id="resizer" role="separator" aria-label="Drag to resize"></div>
+  <section id="outSec">
+    <div class="tab"><b>Output</b><button id="clear">Clear</button></div>
     <pre id="out" class="mono" aria-live="polite"></pre>
     <div id="inputRow" class="mono">
       <span>input:</span>
@@ -77,7 +99,6 @@
 importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
 let pyodide, i32, bytes;
 const dec = new TextDecoder();
-
 function mk(err) {
   const b = [];
   const d = new TextDecoder();
@@ -87,7 +108,6 @@ function mk(err) {
   return { flush, handle: (c) => { b.push(c & 255); if ((c & 255) === 10) flush(); } };
 }
 const O = mk(false), E = mk(true);
-
 onmessage = async (ev) => {
   const m = ev.data;
   if (m.type === "init") {
@@ -136,14 +156,122 @@ print(f"Hello, {name}!")
 for i in range(1, 6):
     print(i, "squared is", i * i)
 `;
-  const KEY = "online-python-code";
+  const KEY = "pyro-code", LKEY = "pyro-layout";
   const $ = (id) => document.getElementById(id);
-  const codeEl = $("code"), outEl = $("out"), runBtn = $("run"), stopBtn = $("stop"),
-        statusEl = $("status"), inputRow = $("inputRow"), inputEl = $("inputEl");
+  const codeEl = $("code"), hlEl = $("hl"), gutEl = $("gutter"), outEl = $("out"),
+        runBtn = $("run"), stopBtn = $("stop"), statusEl = $("status"),
+        inputRow = $("inputRow"), inputEl = $("inputEl"),
+        mainEl = $("main"), outSec = $("outSec"), resizer = $("resizer");
+
+  /* ---------- editor: highlight + line numbers ---------- */
+  const KW = new Set("False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" "));
+  const BI = new Set("print input len range int str float list dict set tuple bool sum min max abs sorted enumerate zip map filter open type isinstance round reversed any all".split(" "));
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const TOKEN = /(#.*$)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)\b/gm;
+
+  function highlight(src) {
+    let out = "", last = 0, m;
+    TOKEN.lastIndex = 0;
+    while ((m = TOKEN.exec(src))) {
+      out += esc(src.slice(last, m.index));
+      const t = m[0];
+      if (m[1]) out += '<span class="c">' + esc(t) + "</span>";
+      else if (m[2]) out += '<span class="s">' + esc(t) + "</span>";
+      else if (m[3]) out += '<span class="n">' + t + "</span>";
+      else if (KW.has(t)) out += '<span class="k">' + t + "</span>";
+      else if (BI.has(t)) out += '<span class="b">' + t + "</span>";
+      else out += t;
+      last = m.index + t.length;
+    }
+    return out + esc(src.slice(last)) + "\n";
+  }
+
+  function refresh() {
+    const v = codeEl.value;
+    hlEl.innerHTML = highlight(v);
+    const n = v.split("\n").length;
+    let nums = "";
+    for (let i = 1; i <= n; i++) nums += i + "\n";
+    gutEl.textContent = nums;
+    sync();
+  }
+  function sync() {
+    hlEl.scrollTop = codeEl.scrollTop; hlEl.scrollLeft = codeEl.scrollLeft;
+    gutEl.scrollTop = codeEl.scrollTop;
+  }
 
   try { codeEl.value = localStorage.getItem(KEY) || DEFAULT_CODE; } catch { codeEl.value = DEFAULT_CODE; }
-  codeEl.addEventListener("input", () => { try { localStorage.setItem(KEY, codeEl.value); } catch {} });
+  codeEl.addEventListener("input", () => {
+    refresh();
+    try { localStorage.setItem(KEY, codeEl.value); } catch {}
+  });
+  codeEl.addEventListener("scroll", sync);
+  refresh();
 
+  /* ---------- layout: rotate + resize ---------- */
+  const ORDER = ["right", "bottom", "left", "top"];
+  const LABEL = { right: "Right", bottom: "Bottom", left: "Left", top: "Top" };
+  let layout = window.innerWidth < 800 ? "bottom" : "right";
+  let frac = 0.45;
+  try {
+    const saved = JSON.parse(localStorage.getItem(LKEY) || "null");
+    if (saved && ORDER.includes(saved.layout)) { layout = saved.layout; frac = saved.frac || frac; }
+  } catch {}
+
+  const isHoriz = () => layout === "right" || layout === "left";
+  function applyLayout() {
+    mainEl.dataset.layout = layout;
+    $("rotate").textContent = "Output: " + LABEL[layout];
+    const r = mainEl.getBoundingClientRect();
+    const total = (isHoriz() ? r.width : r.height) - 7;
+    outSec.style.flex = "0 0 " + Math.round(frac * total) + "px";
+    try { localStorage.setItem(LKEY, JSON.stringify({ layout, frac })); } catch {}
+  }
+  $("rotate").addEventListener("click", () => {
+    layout = ORDER[(ORDER.indexOf(layout) + 1) % ORDER.length];
+    applyLayout();
+  });
+  window.addEventListener("resize", applyLayout);
+
+  resizer.addEventListener("pointerdown", (e) => {
+    resizer.setPointerCapture(e.pointerId);
+    resizer.classList.add("drag");
+    mainEl.classList.add("dragging");
+  });
+  resizer.addEventListener("pointermove", (e) => {
+    if (!resizer.hasPointerCapture(e.pointerId)) return;
+    const r = mainEl.getBoundingClientRect();
+    let size, total;
+    if (layout === "right")       { size = r.right - e.clientX;  total = r.width; }
+    else if (layout === "left")   { size = e.clientX - r.left;   total = r.width; }
+    else if (layout === "bottom") { size = r.bottom - e.clientY; total = r.height; }
+    else                          { size = e.clientY - r.top;    total = r.height; }
+    total -= 7;
+    frac = Math.min(0.85, Math.max(0.15, size / total));
+    applyLayout();
+  });
+  const endDrag = (e) => {
+    resizer.classList.remove("drag");
+    mainEl.classList.remove("dragging");
+    if (resizer.hasPointerCapture(e.pointerId)) resizer.releasePointerCapture(e.pointerId);
+  };
+  resizer.addEventListener("pointerup", endDrag);
+  resizer.addEventListener("pointercancel", endDrag);
+  applyLayout();
+
+  /* ---------- download ---------- */
+  $("download").addEventListener("click", () => {
+    const blob = new Blob([codeEl.value], { type: "text/x-python" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "main.py";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  /* ---------- output + worker ---------- */
   function write(text, cls) {
     const span = document.createElement("span");
     if (cls) span.className = cls;
@@ -153,7 +281,7 @@ for i in range(1, 6):
   }
 
   let worker, i32, bytes;
-
+  let offlineReady = false;
   function hideInput() { inputRow.classList.remove("show"); inputEl.value = ""; }
 
   function start() {
@@ -176,7 +304,7 @@ for i in range(1, 6):
   function onMsg(ev) {
     const m = ev.data;
     if (m.type === "ready") {
-      statusEl.textContent = "Python " + m.version + " ready";
+      statusEl.textContent = "Python " + m.version + (offlineReady ? " \u00b7 offline ready" : "");
       runBtn.disabled = false;
     } else if (m.type === "fail") {
       statusEl.textContent = "Failed to load Python. Check your connection and reload.";
@@ -186,7 +314,7 @@ for i in range(1, 6):
       inputRow.classList.add("show");
       inputEl.focus();
     } else if (m.type === "done") {
-      write(">>> done\n", "info");
+      write("--- finished ---\n", "info");
       runBtn.disabled = false; stopBtn.disabled = true; hideInput();
     }
   }
@@ -194,7 +322,7 @@ for i in range(1, 6):
   function run() {
     if (runBtn.disabled) return;
     runBtn.disabled = true; stopBtn.disabled = false;
-    write(">>> running\n", "info");
+    outEl.textContent = "";
     worker.postMessage({ type: "run", code: codeEl.value });
   }
 
@@ -209,12 +337,12 @@ for i in range(1, 6):
   }
 
   runBtn.addEventListener("click", run);
-  stopBtn.addEventListener("click", () => { write(">>> stopped\n", "info"); start(); });
+  stopBtn.addEventListener("click", () => { write("--- stopped ---\n", "info"); start(); });
   $("send").addEventListener("click", send);
   inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
   $("clear").addEventListener("click", () => { outEl.textContent = ""; });
   $("reset").addEventListener("click", () => {
-    codeEl.value = DEFAULT_CODE;
+    codeEl.value = DEFAULT_CODE; refresh();
     try { localStorage.setItem(KEY, DEFAULT_CODE); } catch {}
   });
 
@@ -228,6 +356,19 @@ for i in range(1, 6):
   });
 
   start();
+
+  /* ---------- offline support ---------- */
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js")
+      .then(() => navigator.serviceWorker.ready)
+      .then(async () => {
+        offlineReady = !!(await caches.match("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.asm.wasm"));
+        const t = statusEl.textContent;
+        if (offlineReady && t.startsWith("Python ") && !t.includes("offline")) statusEl.textContent = t + " \u00b7 offline ready";
+      })
+      .catch(() => {});
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  }
 </script>
 </body>
 </html>
