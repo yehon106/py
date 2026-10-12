@@ -4,9 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pyro - Online Python</title>
-<link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#14171c">
-<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root {
     --bg: #14171c; --bar: #1b1f26; --edit: #1d2128; --line: #2b313b;
@@ -281,7 +278,6 @@ for i in range(1, 6):
   }
 
   let worker, i32, bytes;
-  let offlineReady = false;
   function hideInput() { inputRow.classList.remove("show"); inputEl.value = ""; }
 
   function start() {
@@ -304,7 +300,7 @@ for i in range(1, 6):
   function onMsg(ev) {
     const m = ev.data;
     if (m.type === "ready") {
-      statusEl.textContent = "Python " + m.version + (offlineReady ? " \u00b7 offline ready" : "");
+      statusEl.textContent = "Python " + m.version;
       runBtn.disabled = false;
     } else if (m.type === "fail") {
       statusEl.textContent = "Failed to load Python. Check your connection and reload.";
@@ -356,19 +352,6 @@ for i in range(1, 6):
   });
 
   start();
-
-  /* ---------- offline support ---------- */
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js")
-      .then(() => navigator.serviceWorker.ready)
-      .then(async () => {
-        offlineReady = !!(await caches.match("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.asm.wasm"));
-        const t = statusEl.textContent;
-        if (offlineReady && t.startsWith("Python ") && !t.includes("offline")) statusEl.textContent = t + " \u00b7 offline ready";
-      })
-      .catch(() => {});
-    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
-  }
 </script>
 </body>
 </html>
