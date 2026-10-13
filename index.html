@@ -143,7 +143,8 @@ function emit(text, err) {
 }
 
 // ---- Graphics window: drawing commands are batched and sent to the page's canvas. ----
-let gi32 = null, gkeys = null, gq = [], gW = 640, gH = 480;
+let gi32 = null, gkeys = null, gq = [], gW = 640, gH = 480, gPoly = 0;
+function snd(cmd) { postMessage({ type: "snd", cmd }); }
 function gfxPush(c) { gq.push(c); if (gq.length > 4000) gfxFlush(); }
 function gfxFlush() { if (gq.length) { postMessage({ type: "gfx", cmds: gq }); gq = []; } }
 const GKEYS = { left: 37, up: 38, right: 39, down: 40, space: 32, enter: 13, escape: 27, esc: 27, shift: 16, ctrl: 17, tab: 9, backspace: 8 };
@@ -170,6 +171,18 @@ const gfxApi = {
     gfxPush(["set", "textBaseline", "top"]);
     gfxPush(["ctx", "fillText", [String(s), x, y]]);
   },
+  ellipse(x, y, rx, ry, fill) {
+    gfxPush(["ctx", "beginPath", []]); gfxPush(["ctx", "ellipse", [x, y, rx, ry, 0, 0, Math.PI * 2]]);
+    gfxPush(["ctx", fill === false ? "stroke" : "fill", []]);
+  },
+  poly_begin() { gfxPush(["ctx", "beginPath", []]); gPoly = 0; },
+  poly_point(x, y) { gfxPush(["ctx", gPoly++ ? "lineTo" : "moveTo", [x, y]]); },
+  poly_end(fill) { gfxPush(["ctx", "closePath", []]); gfxPush(["ctx", fill === false ? "stroke" : "fill", []]); },
+  gradient(x1, y1, x2, y2, c1, c2) { gfxPush(["grad", x1, y1, x2, y2, c1, c2]); },   // next fills/lines use it
+  image(url, x, y, w, h) { gfxPush(["img", String(url), x, y, w, h]); },              // draws once the picture has loaded
+  beep(freq, ms, vol, wave) { snd(["beep", freq || 440, ms || 150, vol === undefined ? 0.2 : vol, wave || "square"]); },
+  keycode(n) { return !!(gkeys && Atomics.load(gkeys, n & 255)); },
+  mouse_buttons() { return gi32 ? Atomics.load(gi32, 2) : 0; },
   flip() { gfxFlush(); },
   sleep(sec) { gfxFlush(); Atomics.wait(gi32, 3, 0, Math.max(0, (sec || 0) * 1000)); },
   key(name) {
@@ -210,7 +223,7 @@ onmessage = async (ev) => {
     if (self.__gfxEvent) self.__gfxEvent(m.ev);
   } else if (m.type === "run") {
     try {
-      await LANG.run(m.code);
+      await LANG.run(m.code, m.canvas);
     } catch (e) {
       O.flush(); flushOut();
       postMessage({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
@@ -232,6 +245,7 @@ const LANG = {
     pyodide.setStderr({ raw: E.handle });
     pyodide.setStdin({ stdin: () => readLine() });
     pyodide.registerJsModule("gfx", gfxApi);   // import gfx
+    pyodide.runPython(PYGAME);                 // import pygame (look-alike)
     return "Python " + pyodide.version;
   },
   async run(code) {
@@ -287,7 +301,7 @@ const LANG = {
     self.addEventListener("unhandledrejection", (ev) => { ev.preventDefault(); report(ev.reason); });
     return "JavaScript";
   },
-  async run(code) {
+  async run(code, off) {
     const say = (err) => (...a) => emit(a.map((x) => ins(x, 0, [])).join(" ") + "\n", err);
     const clocks = {};
     const con = {
@@ -304,6 +318,10 @@ const LANG = {
     const live = new Map();
     let nid = 1, waiter = null;
     const check = () => { if (!live.size && waiter) { const w = waiter; waiter = null; w(); } };
+    const stopHandle = (h) => {
+      if (h && h.raf !== undefined) self.cancelAnimationFrame(h.raf);
+      else { clearTimeout(h); clearInterval(h); }
+    };
     const st = (fn, ms, ...a) => {
       const id = nid++;
       live.set(id, setTimeout(async () => {
@@ -324,15 +342,12 @@ const LANG = {
     };
     const ct = (id) => {
       const h = live.get(id);
-      if (h !== undefined) { clearTimeout(h); clearInterval(h); live.delete(id); check(); }
+      if (h !== undefined) { stopHandle(h); live.delete(id); check(); }
     };
 
-    // Graphics: canvas / ctx / document / window behave like the browser ones (drawing shows in the panel).
-    const GM = new Set("save restore scale rotate translate transform setTransform resetTransform beginPath closePath moveTo lineTo bezierCurveTo quadraticCurveTo arc arcTo ellipse rect roundRect fill stroke clip clearRect fillRect strokeRect fillText strokeText setLineDash".split(" "));
-    const props = { fillStyle: "#000000", strokeStyle: "#000000", lineWidth: 1, font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic", globalAlpha: 1 };
-    let cw = 640, ch = 480;
+    // Windows and handlers: event listeners keep the run open until Stop, like an open window.
     const listeners = {};
-    let hold = null;   // a window with event handlers stays open until Stop
+    let hold = null;
     const addL = (t, f) => {
       (listeners[t] = listeners[t] || []).push(f);
       if (hold === null) { hold = nid++; live.set(hold, null); }
@@ -342,32 +357,144 @@ const LANG = {
       const ev = Object.assign({ preventDefault() {}, stopPropagation() {} }, e);
       (listeners[e.type] || []).slice().forEach((f) => { try { f(ev); } catch (x) { report(x); } });
     };
-    const ctx = new Proxy({}, {
-      get(_, k) {
-        if (k === "canvas") return canvas;
-        if (k === "measureText") return (t) => ({ width: String(t).length * (parseFloat(props.font) || 10) * 0.55 });
-        if (GM.has(k)) return (...a) => { gfxPush(["ctx", k, a]); };
-        return props[k];
+
+    // Images and sounds (the worker has no Image / Audio, so these stand in for them).
+    class Img {
+      constructor(w, h) {
+        this.width = w || 0; this.height = h || 0; this.naturalWidth = 0; this.naturalHeight = 0;
+        this.complete = false; this.bitmap = null; this.onload = null; this.onerror = null; this._src = ""; this._l = {};
+      }
+      get src() { return this._src; }
+      set src(u) {
+        this._src = String(u); this.complete = false;
+        const id = nid++; live.set(id, null);   // stay open while the picture loads
+        fetch(this._src, { mode: "cors" })
+          .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); })
+          .then((b) => createImageBitmap(b))
+          .then((bm) => {
+            this.bitmap = bm; this.width = this.naturalWidth = bm.width; this.height = this.naturalHeight = bm.height;
+            this.complete = true; this._fire("load");
+          })
+          .catch(() => this._fire("error"))
+          .finally(() => { live.delete(id); check(); });
+      }
+      _fire(t) {
+        const ev = { type: t, target: this };
+        try { if (this["on" + t]) this["on" + t](ev); (this._l[t] || []).forEach((f) => f(ev)); } catch (e) { report(e); }
+      }
+      addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); }
+      removeEventListener() {}
+      decode() { return new Promise((res, rej) => { if (this.complete) res(); else { this.addEventListener("load", () => res()); this.addEventListener("error", () => rej(new Error("image failed to load"))); } }); }
+    }
+    let aid = 1;
+    class Aud {
+      constructor(url) {
+        this._id = aid++; this._src = url === undefined ? "" : String(url);
+        this._p = { volume: 1, loop: false, muted: false, currentTime: 0, playbackRate: 1 };
+        snd(["new", this._id, this._src]);
+      }
+      get src() { return this._src; }
+      set src(u) { this._src = String(u); snd(["src", this._id, this._src]); }
+      play() { snd(["play", this._id]); return Promise.resolve(); }
+      pause() { snd(["pause", this._id]); }
+      load() {}
+      cloneNode() { const a = new Aud(this._src); Object.assign(a, this._p); return a; }
+      addEventListener() {}
+      removeEventListener() {}
+    }
+    for (const k of ["volume", "loop", "muted", "currentTime", "playbackRate"]) {
+      Object.defineProperty(Aud.prototype, k, { get() { return this._p[k]; }, set(v) { this._p[k] = v; snd(["set", this._id, k, v]); } });
+    }
+    const beep = (f, ms, vol, wave) => gfxApi.beep(f, ms, vol, wave);
+
+    // Canvas. With OffscreenCanvas it is the real thing (gradients, getImageData, WebGL, ...).
+    // Without it, drawing commands are sent to the page instead (a smaller set of features).
+    let canvas, ctx, doc, raf;
+    const wrapCtx = (c) => new Proxy(c, {
+      get(t, k) {
+        if (k === "drawImage" || k === "createPattern") return (img, ...a) => t[k](img && img.bitmap ? img.bitmap : img, ...a);
+        const v = t[k];
+        return typeof v === "function" ? v.bind(t) : v;
       },
-      set(_, k, v) { props[k] = v; gfxPush(["set", k, v]); return true; },
+      set(t, k, v) { t[k] = v; return true; },
     });
-    const canvas = {
-      get width() { return cw; }, set width(v) { cw = v | 0; gfxPush(["size", cw, ch]); },
-      get height() { return ch; }, set height(v) { ch = v | 0; gfxPush(["size", cw, ch]); },
-      style: {}, focus() {}, getContext: () => ctx, addEventListener: addL, removeEventListener: rmL,
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: cw, height: ch }),
+    const newCanvas = () => {
+      const o = new OffscreenCanvas(300, 150);
+      const og = o.getContext.bind(o);
+      o.getContext = (t, x) => { const c = og(t, x); return t === "2d" && c ? wrapCtx(c) : c; };
+      o.style = {}; o.focus = () => {};
+      return o;
     };
-    const raf = (fn) => st(() => fn(performance.now()), 16);
-    const doc = { addEventListener: addL, removeEventListener: rmL, getElementById: () => canvas, querySelector: () => canvas, body: {} };
-    const win = { addEventListener: addL, removeEventListener: rmL, requestAnimationFrame: raf, cancelAnimationFrame: ct, innerWidth: 640, innerHeight: 480 };
+    if (off) {
+      let shown = false;
+      const show = () => { if (!shown) { shown = true; postMessage({ type: "gfxshow" }); } };
+      canvas = off;
+      const og = off.getContext.bind(off);
+      let c2d = null;
+      off.getContext = (t, x) => {
+        show();
+        const c = og(t, x);
+        if (t !== "2d" || !c) return c;
+        return c2d || (c2d = wrapCtx(c));
+      };
+      off.addEventListener = addL; off.removeEventListener = rmL; off.style = {}; off.focus = () => {};
+      off.getBoundingClientRect = () => ({ left: 0, top: 0, width: off.width, height: off.height });
+      ctx = new Proxy(function () {}, {
+        get(_, k) { const c = canvas.getContext("2d"); const v = c[k]; return typeof v === "function" ? v.bind(c) : v; },
+        set(_, k, v) { canvas.getContext("2d")[k] = v; return true; },
+      });
+      raf = (fn) => {
+        if (!self.requestAnimationFrame) return st(() => fn(performance.now()), 16);
+        const id = nid++;
+        live.set(id, { raf: self.requestAnimationFrame(async (t) => {
+          live.delete(id);
+          try { await fn(t); } catch (e) { report(e); }
+          check();
+        }) });
+        return id;
+      };
+      doc = {
+        addEventListener: addL, removeEventListener: rmL, getElementById: () => canvas, querySelector: () => canvas, body: {},
+        createElement(tag) {
+          tag = String(tag).toLowerCase();
+          if (tag === "canvas") return newCanvas();
+          if (tag === "img") return new Img();
+          if (tag === "audio") return new Aud();
+          return { style: {}, addEventListener() {}, appendChild() {}, setAttribute() {} };
+        },
+      };
+    } else {
+      const GM = new Set("save restore scale rotate translate transform setTransform resetTransform beginPath closePath moveTo lineTo bezierCurveTo quadraticCurveTo arc arcTo ellipse rect roundRect fill stroke clip clearRect fillRect strokeRect fillText strokeText setLineDash".split(" "));
+      const props = { fillStyle: "#000000", strokeStyle: "#000000", lineWidth: 1, font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic", globalAlpha: 1 };
+      let cw = 640, ch = 480;
+      ctx = new Proxy({}, {
+        get(_, k) {
+          if (k === "canvas") return canvas;
+          if (k === "measureText") return (t) => ({ width: String(t).length * (parseFloat(props.font) || 10) * 0.55 });
+          if (GM.has(k)) return (...a) => { gfxPush(["ctx", k, a]); };
+          return props[k];
+        },
+        set(_, k, v) { props[k] = v; gfxPush(["set", k, v]); return true; },
+      });
+      canvas = {
+        get width() { return cw; }, set width(v) { cw = v | 0; gfxPush(["size", cw, ch]); },
+        get height() { return ch; }, set height(v) { ch = v | 0; gfxPush(["size", cw, ch]); },
+        style: {}, focus() {}, getContext: () => ctx, addEventListener: addL, removeEventListener: rmL,
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: cw, height: ch }),
+      };
+      raf = (fn) => st(() => fn(performance.now()), 16);
+      doc = { addEventListener: addL, removeEventListener: rmL, getElementById: () => canvas, querySelector: () => canvas, body: {},
+              createElement: (tag) => (String(tag).toLowerCase() === "audio" ? new Aud() : { style: {}, addEventListener() {}, appendChild() {}, setAttribute() {} }) };
+    }
+    const win = { addEventListener: addL, removeEventListener: rmL, requestAnimationFrame: raf, cancelAnimationFrame: ct, innerWidth: 640, innerHeight: 480, Image: Img, Audio: Aud };
 
     try {
-      const fn = new AsyncFunction("console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "canvas", "ctx", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", "gfx", code);
-      await fn(con, inp, inp, alertFn, st, si, ct, ct, canvas, ctx, doc, win, raf, ct, gfxApi);
+      const fn = new AsyncFunction("console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "canvas", "ctx", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", "gfx", "Image", "Audio", "beep", code);
+      await fn(con, inp, inp, alertFn, st, si, ct, ct, canvas, ctx, doc, win, raf, ct, gfxApi, Img, Aud, beep);
       if (live.size) await new Promise((r) => { waiter = r; });
     } catch (e) {
       report(e);
-      live.forEach((h) => { clearTimeout(h); clearInterval(h); });
+      live.forEach(stopHandle);
       live.clear();
     }
   },
@@ -566,6 +693,33 @@ const LANG = {
 </script>
 
 <script id="w-cpp" type="text/plain">
+// #include <gfx.h> : C-style graphics, sound and input for JSCPP.
+const gfxInclude = {
+  load(rt) {
+    const D = rt.doubleTypeLiteral, I = rt.intTypeLiteral, V = rt.voidTypeLiteral, S = rt.normalPointerType(rt.charTypeLiteral);
+    const str = (p) => rt.getStringFromCharArray(p);
+    const reg = (name, args, ret, fn) => rt.regFunc(fn, "global", name, args, ret);
+    const none = () => rt.val(I, 0);
+    reg("gfx_window", [D, D], V, (rt, _t, w, h) => { gfxApi.window(w.v, h.v); });
+    reg("gfx_clear", [D, D, D], V, (rt, _t, r, g, b) => { gfxApi.clear("rgb(" + r.v + "," + g.v + "," + b.v + ")"); });
+    reg("gfx_color", [D, D, D], V, (rt, _t, r, g, b) => { gfxApi.color(r.v, g.v, b.v); });
+    reg("gfx_line_width", [D], V, (rt, _t, w) => { gfxApi.line_width(w.v); });
+    reg("gfx_line", [D, D, D, D], V, (rt, _t, a, b, c, d) => { gfxApi.line(a.v, b.v, c.v, d.v); });
+    reg("gfx_rect", [D, D, D, D], V, (rt, _t, x, y, w, h) => { gfxApi.rect(x.v, y.v, w.v, h.v); });
+    reg("gfx_rect_outline", [D, D, D, D], V, (rt, _t, x, y, w, h) => { gfxApi.rect(x.v, y.v, w.v, h.v, false); });
+    reg("gfx_circle", [D, D, D], V, (rt, _t, x, y, r) => { gfxApi.circle(x.v, y.v, r.v); });
+    reg("gfx_circle_outline", [D, D, D], V, (rt, _t, x, y, r) => { gfxApi.circle(x.v, y.v, r.v, false); });
+    reg("gfx_text", [S, D, D, D], V, (rt, _t, s, x, y, size) => { gfxApi.text(str(s), x.v, y.v, size.v); });
+    reg("gfx_flip", [], V, () => { gfxApi.flip(); });
+    reg("gfx_sleep", [D], V, (rt, _t, ms) => { gfxApi.sleep(ms.v / 1000); });
+    reg("gfx_key", [S], I, (rt, _t, s) => rt.val(I, gfxApi.key(str(s)) ? 1 : 0));
+    reg("gfx_mouse_x", [], I, () => rt.val(I, gfxApi.mouse_x()));
+    reg("gfx_mouse_y", [], I, () => rt.val(I, gfxApi.mouse_y()));
+    reg("gfx_mouse_down", [], I, () => rt.val(I, gfxApi.mouse_down() ? 1 : 0));
+    reg("gfx_beep", [D, D], V, (rt, _t, f, ms) => { gfxApi.beep(f.v, ms.v); });
+  },
+};
+
 const LANG = {
   async init() {
     importScripts(BASE + "jscpp.js");
@@ -575,10 +729,284 @@ const LANG = {
     // JSCPP asks for input only when the program reads it; we answer with a line typed in the page.
     JSCPP.run(code, "", {
       stdio: { drain: () => readLine() + "\n", write: (s) => emit(s) },
+      includes: { "gfx.h": gfxInclude, gfx: gfxInclude },
       unsigned_overflow: "warn",
     });
   },
 };
+</script>
+
+<script id="py-pygame" type="text/plain">
+# A small pygame look-alike for Cronoff. It draws through the gfx window (import gfx).
+# Supported: display, draw (rect/circle/line/lines/polygon/ellipse), event, key, mouse, time.Clock, font text, Rect, Vector2, simple sounds.
+import sys, types, time as _time
+import gfx
+
+def _mod(name, **attrs):
+    m = types.ModuleType(name)
+    m.__dict__.update(attrs)
+    sys.modules[name] = m
+    return m
+
+class error(Exception):
+    pass
+
+_NAMED = {"black": (0, 0, 0), "white": (255, 255, 255), "red": (255, 0, 0), "green": (0, 128, 0), "lime": (0, 255, 0),
+          "blue": (0, 0, 255), "yellow": (255, 255, 0), "gray": (128, 128, 128), "grey": (128, 128, 128),
+          "orange": (255, 165, 0), "purple": (128, 0, 128), "pink": (255, 192, 203), "cyan": (0, 255, 255),
+          "magenta": (255, 0, 255), "brown": (165, 42, 42)}
+
+def Color(*a):
+    if len(a) == 1:
+        c = a[0]
+        if isinstance(c, str):
+            if c.startswith("#"):
+                h = c[1:]
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+            return _NAMED.get(c.lower(), (0, 0, 0)) + (255,)
+        a = tuple(c)
+    return tuple(a) if len(a) > 3 else tuple(a) + (255,)
+
+def _css(c):
+    if isinstance(c, str):
+        return c
+    c = tuple(c)
+    return "rgb(%d,%d,%d)" % (int(c[0]), int(c[1]), int(c[2]))
+
+class Rect:
+    def __init__(self, *a):
+        if len(a) == 1:
+            a = tuple(a[0])
+        if len(a) == 2:
+            (x, y), (w, h) = a
+        else:
+            x, y, w, h = a
+        self.x, self.y, self.w, self.h = x, y, w, h
+    width = property(lambda s: s.w, lambda s, v: setattr(s, "w", v))
+    height = property(lambda s: s.h, lambda s, v: setattr(s, "h", v))
+    left = property(lambda s: s.x, lambda s, v: setattr(s, "x", v))
+    top = property(lambda s: s.y, lambda s, v: setattr(s, "y", v))
+    right = property(lambda s: s.x + s.w, lambda s, v: setattr(s, "x", v - s.w))
+    bottom = property(lambda s: s.y + s.h, lambda s, v: setattr(s, "y", v - s.h))
+    centerx = property(lambda s: s.x + s.w // 2, lambda s, v: setattr(s, "x", v - s.w // 2))
+    centery = property(lambda s: s.y + s.h // 2, lambda s, v: setattr(s, "y", v - s.h // 2))
+    center = property(lambda s: (s.centerx, s.centery), lambda s, v: (setattr(s, "centerx", v[0]), setattr(s, "centery", v[1])) and None)
+    topleft = property(lambda s: (s.x, s.y), lambda s, v: (setattr(s, "x", v[0]), setattr(s, "y", v[1])) and None)
+    size = property(lambda s: (s.w, s.h))
+    def __iter__(self): return iter((self.x, self.y, self.w, self.h))
+    def __getitem__(self, i): return (self.x, self.y, self.w, self.h)[i]
+    def __eq__(self, o): return tuple(self) == tuple(o)
+    def __repr__(self): return "<rect(%s, %s, %s, %s)>" % tuple(self)
+    def copy(self): return Rect(self.x, self.y, self.w, self.h)
+    def move(self, dx, dy): return Rect(self.x + dx, self.y + dy, self.w, self.h)
+    def move_ip(self, dx, dy): self.x += dx; self.y += dy
+    def inflate(self, dx, dy): return Rect(self.x - dx // 2, self.y - dy // 2, self.w + dx, self.h + dy)
+    def inflate_ip(self, dx, dy): self.x -= dx // 2; self.y -= dy // 2; self.w += dx; self.h += dy
+    def collidepoint(self, *p):
+        if len(p) == 1: p = tuple(p[0])
+        return self.x <= p[0] < self.x + self.w and self.y <= p[1] < self.y + self.h
+    def colliderect(self, o):
+        o = Rect(o)
+        return self.x < o.x + o.w and o.x < self.x + self.w and self.y < o.y + o.h and o.y < self.y + self.h
+    def contains(self, o):
+        o = Rect(o)
+        return o.x >= self.x and o.y >= self.y and o.x + o.w <= self.x + self.w and o.y + o.h <= self.y + self.h
+
+class Vector2:
+    def __init__(self, x=0, y=0):
+        if not isinstance(x, (int, float)): x, y = x
+        self.x, self.y = x, y
+    def __iter__(self): return iter((self.x, self.y))
+    def __getitem__(self, i): return (self.x, self.y)[i]
+    def __add__(self, o): return Vector2(self.x + o[0], self.y + o[1])
+    def __sub__(self, o): return Vector2(self.x - o[0], self.y - o[1])
+    def __mul__(self, k): return Vector2(self.x * k, self.y * k)
+    __rmul__ = __mul__
+    def __truediv__(self, k): return Vector2(self.x / k, self.y / k)
+    def __neg__(self): return Vector2(-self.x, -self.y)
+    def __eq__(self, o): return (self.x, self.y) == tuple(o)
+    def __repr__(self): return "<Vector2(%s, %s)>" % (self.x, self.y)
+    def length(self): return (self.x ** 2 + self.y ** 2) ** 0.5
+    def normalize(self):
+        n = self.length()
+        return Vector2(self.x / n, self.y / n) if n else Vector2(0, 0)
+    def distance_to(self, o): return (self - o).length()
+    def dot(self, o): return self.x * o[0] + self.y * o[1]
+
+class _Text:
+    def __init__(self, text, color, size):
+        self.text, self.color, self.size = text, color, size
+    def get_width(self): return int(len(self.text) * self.size * 0.55)
+    def get_height(self): return self.size
+    def get_size(self): return (self.get_width(), self.get_height())
+    def get_rect(self, **kw):
+        r = Rect(0, 0, self.get_width(), self.get_height())
+        for k, v in kw.items(): setattr(r, k, v)
+        return r
+
+class Surface:
+    def __init__(self, size=None, flags=0, depth=0, _screen=False):
+        if not _screen:
+            raise NotImplementedError("pygame.Surface for off-screen images is not supported in Cronoff yet. Draw on the screen instead.")
+        self._w, self._h = size
+    def get_width(self): return self._w
+    def get_height(self): return self._h
+    def get_size(self): return (self._w, self._h)
+    def get_rect(self, **kw):
+        r = Rect(0, 0, self._w, self._h)
+        for k, v in kw.items(): setattr(r, k, v)
+        return r
+    def fill(self, color, rect=None):
+        r = Rect(rect) if rect is not None else Rect(0, 0, self._w, self._h)
+        gfx.color(_css(color)); gfx.rect(r.x, r.y, r.w, r.h)
+    def blit(self, src, dest, area=None):
+        if not isinstance(src, _Text):
+            raise NotImplementedError("Only rendered text can be blitted in Cronoff (no image surfaces yet).")
+        p = dest.topleft if isinstance(dest, Rect) else tuple(dest)
+        gfx.color(_css(src.color)); gfx.text(src.text, p[0], p[1], src.size)
+    def set_at(self, pos, color):
+        gfx.color(_css(color)); gfx.rect(pos[0], pos[1], 1, 1)
+
+_screen = None
+
+def _stroke(width):
+    gfx.line_width(max(1, int(width)))
+
+def _rect(surface, color, rect, width=0, border_radius=0, **kw):
+    r = Rect(rect); gfx.color(_css(color))
+    if width: _stroke(width); gfx.rect(r.x, r.y, r.w, r.h, False)
+    else: gfx.rect(r.x, r.y, r.w, r.h)
+    return r
+def _circle(surface, color, center, radius, width=0, **kw):
+    gfx.color(_css(color))
+    if width: _stroke(width); gfx.circle(center[0], center[1], radius, False)
+    else: gfx.circle(center[0], center[1], radius)
+    return Rect(center[0] - radius, center[1] - radius, radius * 2, radius * 2)
+def _ellipse(surface, color, rect, width=0):
+    r = Rect(rect); gfx.color(_css(color))
+    if width: _stroke(width); gfx.ellipse(r.centerx, r.centery, r.w / 2, r.h / 2, False)
+    else: gfx.ellipse(r.centerx, r.centery, r.w / 2, r.h / 2)
+    return r
+def _line(surface, color, start, end, width=1):
+    gfx.color(_css(color)); _stroke(width); gfx.line(start[0], start[1], end[0], end[1])
+def _lines(surface, color, closed, points, width=1):
+    pts = list(points)
+    for i in range(len(pts) - 1): _line(surface, color, pts[i], pts[i + 1], width)
+    if closed and len(pts) > 2: _line(surface, color, pts[-1], pts[0], width)
+def _polygon(surface, color, points, width=0):
+    gfx.color(_css(color)); gfx.poly_begin()
+    for p in points: gfx.poly_point(p[0], p[1])
+    if width: _stroke(width); gfx.poly_end(False)
+    else: gfx.poly_end()
+
+# --- input ---
+QUIT, KEYDOWN, KEYUP, MOUSEMOTION, MOUSEBUTTONDOWN, MOUSEBUTTONUP = 256, 768, 769, 1024, 1025, 1026
+_K = {}
+for _c in "abcdefghijklmnopqrstuvwxyz":
+    _K[ord(_c)] = ord(_c.upper())
+for _c in "0123456789":
+    _K[ord(_c)] = ord(_c)
+_K.update({32: 32, 13: 13, 27: 27, 9: 9, 8: 8, 1073741904: 37, 1073741903: 39, 1073741906: 38, 1073741905: 40,
+           1073742049: 16, 1073742053: 16, 1073742048: 17, 1073742052: 17})
+_CONST = {"K_SPACE": 32, "K_RETURN": 13, "K_ESCAPE": 27, "K_TAB": 9, "K_BACKSPACE": 8, "K_LEFT": 1073741904,
+          "K_RIGHT": 1073741903, "K_UP": 1073741906, "K_DOWN": 1073741905, "K_LSHIFT": 1073742049, "K_RSHIFT": 1073742053,
+          "K_LCTRL": 1073742048, "K_RCTRL": 1073742052, "QUIT": QUIT, "KEYDOWN": KEYDOWN, "KEYUP": KEYUP,
+          "MOUSEMOTION": MOUSEMOTION, "MOUSEBUTTONDOWN": MOUSEBUTTONDOWN, "MOUSEBUTTONUP": MOUSEBUTTONUP,
+          "SRCALPHA": 65536, "FULLSCREEN": 1, "RESIZABLE": 16, "DOUBLEBUF": 1073741824}
+for _c in "abcdefghijklmnopqrstuvwxyz0123456789":
+    _CONST["K_" + _c] = ord(_c)
+
+class Event:
+    def __init__(self, type, **kw):
+        self.type = type; self.__dict__.update(kw)
+    def __repr__(self): return "<Event(%d %s)>" % (self.type, self.__dict__)
+
+_pk, _pb, _pp = set(), 0, None
+def _get_events():
+    global _pk, _pb, _pp
+    out = []
+    cur = {k for k, code in _K.items() if gfx.keycode(code)}
+    for k in sorted(cur - _pk): out.append(Event(KEYDOWN, key=k, unicode=chr(k) if 32 <= k < 127 else "", mod=0))
+    for k in sorted(_pk - cur): out.append(Event(KEYUP, key=k, mod=0))
+    _pk = cur
+    pos = (gfx.mouse_x(), gfx.mouse_y()); b = gfx.mouse_buttons()
+    if _pp is not None and pos != _pp: out.append(Event(MOUSEMOTION, pos=pos, rel=(pos[0] - _pp[0], pos[1] - _pp[1]), buttons=_mouse_pressed()))
+    _pp = pos
+    for bit, num in ((1, 1), (4, 2), (2, 3)):
+        if (b & bit) and not (_pb & bit): out.append(Event(MOUSEBUTTONDOWN, pos=pos, button=num))
+        if (_pb & bit) and not (b & bit): out.append(Event(MOUSEBUTTONUP, pos=pos, button=num))
+    _pb = b
+    return out
+def _mouse_pressed(num_buttons=3):
+    b = gfx.mouse_buttons()
+    return (bool(b & 1), bool(b & 4), bool(b & 2))
+class _Keys:
+    def __getitem__(self, k):
+        code = _K.get(k)
+        return bool(code is not None and gfx.keycode(code))
+
+class Clock:
+    def __init__(self):
+        self._last = _time.time() * 1000.0; self._dt = 0.0
+    def tick(self, fps=0):
+        now = _time.time() * 1000.0
+        if fps:
+            wait = 1000.0 / fps - (now - self._last)
+            if wait > 0:
+                gfx.sleep(wait / 1000.0)
+            else:
+                gfx.flip()
+            now = _time.time() * 1000.0
+        else:
+            gfx.flip()
+        self._dt = now - self._last; self._last = now
+        return int(self._dt)
+    def tick_busy_loop(self, fps=0): return self.tick(fps)
+    def get_time(self): return int(self._dt)
+    def get_fps(self): return 1000.0 / self._dt if self._dt else 0.0
+
+_t0 = _time.time()
+def _set_mode(size=(640, 480), flags=0, depth=0, *a, **kw):
+    global _screen, _pk, _pb, _pp
+    _pk, _pb, _pp = set(), 0, None
+    gfx.window(size[0], size[1])
+    _screen = Surface(size, _screen=True)
+    return _screen
+def _get_ticks(): return int((_time.time() - _t0) * 1000)
+def _wait(ms): gfx.sleep(ms / 1000.0); return int(ms)
+
+class Font:
+    def __init__(self, name=None, size=24): self.size_px = int(size or 24)
+    def render(self, text, antialias=True, color=(255, 255, 255), background=None): return _Text(str(text), color, self.size_px)
+    def size(self, text): return (int(len(str(text)) * self.size_px * 0.55), self.size_px)
+    def get_height(self): return self.size_px
+def _sysfont(name=None, size=24, bold=False, italic=False): return Font(name, size)
+
+class Sound:
+    def __init__(self, *a, **kw): pass
+    def play(self, *a, **kw): gfx.beep(440, 120)
+    def stop(self): pass
+    def set_volume(self, v): pass
+def _no_image(*a, **kw):
+    raise NotImplementedError("pygame.image is not supported in Cronoff yet. Draw shapes with pygame.draw instead.")
+
+_music = _mod("pygame.mixer.music", load=lambda *a: None, play=lambda *a, **k: None, stop=lambda: None, set_volume=lambda v: None)
+_pg = _mod("pygame", error=error, Rect=Rect, Color=Color, Surface=Surface, Vector2=Vector2, Clock=None, Event=Event,
+           init=lambda: (5, 0), quit=lambda: None, get_init=lambda: True, **_CONST)
+_pg.time = _mod("pygame.time", Clock=Clock, get_ticks=_get_ticks, wait=_wait, delay=_wait)
+_pg.Clock = Clock
+_pg.draw = _mod("pygame.draw", rect=_rect, circle=_circle, ellipse=_ellipse, line=_line, aaline=_line, lines=_lines, polygon=_polygon)
+_pg.display = _mod("pygame.display", set_mode=_set_mode, set_caption=lambda *a: None, flip=gfx.flip, update=lambda *a: gfx.flip(),
+                   get_surface=lambda: _screen, init=lambda: None, quit=lambda: None)
+_pg.event = _mod("pygame.event", get=lambda *a, **k: _get_events(), poll=lambda: (_get_events() or [None])[0], pump=lambda: None, clear=lambda *a: None, Event=Event)
+_pg.key = _mod("pygame.key", get_pressed=lambda: _Keys())
+_pg.mouse = _mod("pygame.mouse", get_pos=lambda: (gfx.mouse_x(), gfx.mouse_y()), get_pressed=_mouse_pressed, set_visible=lambda v: None)
+_pg.font = _mod("pygame.font", Font=Font, SysFont=_sysfont, init=lambda: None)
+_pg.mixer = _mod("pygame.mixer", Sound=Sound, init=lambda *a, **k: None, music=_music)
+_pg.image = _mod("pygame.image", load=_no_image)
+_pg.math = _mod("pygame.math", Vector2=Vector2)
+_pg.locals = _mod("pygame.locals", QUIT=QUIT, KEYDOWN=KEYDOWN, KEYUP=KEYUP, MOUSEMOTION=MOUSEMOTION, MOUSEBUTTONDOWN=MOUSEBUTTONDOWN,
+                  MOUSEBUTTONUP=MOUSEBUTTONUP, Rect=Rect, Color=Color, **{k: v for k, v in _CONST.items() if k.startswith("K_")})
 </script>
 
 <script id="ruby-prelude" type="text/plain">
@@ -665,6 +1093,7 @@ for i in range(1, 6):
       name: "Python", exts: ["py"], worker: "w-py", mime: "text/x-python",
       probe: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.asm.wasm",
       sample: DEFAULT_CODE,
+      extra: () => "const PYGAME = " + JSON.stringify($("py-pygame").textContent) + ";\n",
       token: /(#.*$)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)\b/gm,
       kw: words("False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield"),
       bi: words("print input len range int str float list dict set tuple bool sum min max abs sorted enumerate zip map filter open type isinstance round reversed any all"),
@@ -1133,6 +1562,10 @@ for i in range(1, 6):
       updateUI();
     } else if (m.type === "gfx") {
       gfxApply(m.cmds);
+    } else if (m.type === "gfxshow") {
+      gfxShow();
+    } else if (m.type === "snd") {
+      sndApply(m.cmd);
     } else if (m.type === "out") {
       write(m.text, m.err ? "err" : "");
     } else if (m.type === "input") {
@@ -1149,10 +1582,12 @@ for i in range(1, 6):
     const k = curKey();
     running = k;
     outEl.textContent = "";
-    gfxReset();
+    gfxReset(k === "js");
+    sndReset(); sndInit();
     rt[k].gkeys.fill(0);
     updateUI();
-    rt[k].worker.postMessage({ type: "run", code: codeEl.value });
+    if (offc) rt[k].worker.postMessage({ type: "run", code: codeEl.value, canvas: offc }, [offc]);
+    else rt[k].worker.postMessage({ type: "run", code: codeEl.value });
   }
 
   function send() {
@@ -1168,16 +1603,30 @@ for i in range(1, 6):
   }
 
   /* ---------- graphics window: programs draw here, keys and mouse go back to them ---------- */
-  const gfxWrap = $("gfxWrap"), gfxEl = $("gfx"), gctx = gfxEl.getContext("2d");
+  const gfxWrap = $("gfxWrap");
+  let gfxEl = $("gfx"), gctx = gfxEl.getContext("2d"), offc = null;
   const G_METHODS = new Set("save restore scale rotate translate transform setTransform resetTransform beginPath closePath moveTo lineTo bezierCurveTo quadraticCurveTo arc arcTo ellipse rect roundRect fill stroke clip clearRect fillRect strokeRect fillText strokeText setLineDash".split(" "));
   const G_PROPS = new Set("fillStyle strokeStyle lineWidth font textAlign textBaseline globalAlpha lineCap lineJoin miterLimit lineDashOffset globalCompositeOperation shadowBlur shadowColor shadowOffsetX shadowOffsetY imageSmoothingEnabled".split(" "));
-  function gfxReset() {
+  const gImgs = new Map();
+  // A fresh canvas for every run. JavaScript gets the real thing (OffscreenCanvas) when the browser has it.
+  function gfxReset(forJs) {
     gfxWrap.style.display = "none";
-    gfxEl.width = 640; gfxEl.height = 480;
+    const c = document.createElement("canvas");
+    c.id = "gfx"; c.width = 640; c.height = 480; c.tabIndex = 0;
+    c.setAttribute("aria-label", "Graphics window");
+    gfxWrap.replaceChildren(c);
+    gfxEl = c; gctx = null; offc = null;
+    if (forJs && c.transferControlToOffscreen) offc = c.transferControlToOffscreen();
+    else gctx = c.getContext("2d");
   }
-  function gfxApply(cmds) {
+  function gfxShow() {
     const wasHidden = gfxWrap.style.display !== "block";
     gfxWrap.style.display = "block";
+    if (wasHidden) gfxEl.focus({ preventScroll: true });
+  }
+  function gfxApply(cmds) {
+    gfxShow();
+    if (!gctx) return;
     for (const c of cmds) {
       try {
         if (c[0] === "size") {
@@ -1187,32 +1636,83 @@ for i in range(1, 6):
           if (G_METHODS.has(c[1])) gctx[c[1]](...c[2]);
         } else if (c[0] === "set") {
           if (G_PROPS.has(c[1])) gctx[c[1]] = c[2];
+        } else if (c[0] === "grad") {
+          const g = gctx.createLinearGradient(c[1], c[2], c[3], c[4]);
+          g.addColorStop(0, c[5]); g.addColorStop(1, c[6]);
+          gctx.fillStyle = g; gctx.strokeStyle = g;
+        } else if (c[0] === "img") {
+          let im = gImgs.get(c[1]);
+          if (!im) { im = new Image(); im.crossOrigin = "anonymous"; im.src = c[1]; gImgs.set(c[1], im); }
+          if (im.complete && im.naturalWidth) {
+            if (c[4]) gctx.drawImage(im, c[2], c[3], c[4], c[5] || c[4]);
+            else gctx.drawImage(im, c[2], c[3]);
+          }
         }
       } catch {}
     }
-    if (wasHidden) gfxEl.focus({ preventScroll: true });
   }
   function sendEv(ev) { const r = rt[running]; if (r) r.worker.postMessage({ type: "ev", ev }); }
   function gpos(e) {
     const b = gfxEl.getBoundingClientRect();
     return { x: Math.round((e.clientX - b.left) * gfxEl.width / (b.width || 1)), y: Math.round((e.clientY - b.top) * gfxEl.height / (b.height || 1)) };
   }
-  ["mousemove", "mousedown", "mouseup", "click"].forEach((t) => gfxEl.addEventListener(t, (e) => {
-    if (!running) return;
+  ["mousemove", "mousedown", "mouseup", "click"].forEach((t) => gfxWrap.addEventListener(t, (e) => {
+    if (!running || e.target !== gfxEl) return;
     const p = gpos(e), r = rt[running];
     if (r && r.gi32) { r.gi32[0] = p.x; r.gi32[1] = p.y; r.gi32[2] = e.buttons; }
     if (t === "mousedown") gfxEl.focus();
     sendEv({ type: t, x: p.x, y: p.y, offsetX: p.x, offsetY: p.y, clientX: p.x, clientY: p.y, button: e.button, buttons: e.buttons });
   }));
-  gfxEl.addEventListener("contextmenu", (e) => e.preventDefault());
-  ["keydown", "keyup"].forEach((t) => gfxEl.addEventListener(t, (e) => {
+  gfxWrap.addEventListener("contextmenu", (e) => e.preventDefault());
+  ["keydown", "keyup"].forEach((t) => gfxWrap.addEventListener(t, (e) => {
     if (!running || e.key === "Tab" || e.ctrlKey || e.metaKey || e.altKey) return;
     e.preventDefault();
     const r = rt[running];
     if (r && r.gkeys) r.gkeys[e.keyCode & 255] = t === "keydown" ? 1 : 0;
     sendEv({ type: t, key: e.key, code: e.code, keyCode: e.keyCode, which: e.keyCode, repeat: e.repeat });
   }));
-  gfxEl.addEventListener("blur", () => { const r = rt[running]; if (r && r.gkeys) r.gkeys.fill(0); });
+  gfxWrap.addEventListener("focusout", () => { const r = rt[running]; if (r && r.gkeys) r.gkeys.fill(0); });
+
+  /* ---------- sound: beeps and audio files, played by the page ---------- */
+  let actx = null;
+  const auds = new Map();
+  function sndInit() {
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") actx.resume();
+    } catch {}
+  }
+  function sndReset() {
+    for (const a of auds.values()) { try { a.pause(); } catch {} }
+    auds.clear();
+  }
+  function sndApply(c) {
+    try {
+      if (c[0] === "beep") {
+        sndInit();
+        if (!actx) return;
+        const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+        const d = Math.min(5, Math.max(0.01, c[2] / 1000)), v = Math.min(1, Math.max(0, c[3]));
+        o.type = ["sine", "square", "sawtooth", "triangle"].includes(c[4]) ? c[4] : "square";
+        o.frequency.value = Math.min(20000, Math.max(20, c[1]));
+        g.gain.setValueAtTime(v, t); g.gain.linearRampToValueAtTime(0.0001, t + d);
+        o.connect(g); g.connect(actx.destination);
+        o.start(t); o.stop(t + d);
+      } else if (c[0] === "new") {
+        const a = new Audio();
+        a.crossOrigin = "anonymous";
+        if (c[2]) a.src = c[2];
+        auds.set(c[1], a);
+      } else {
+        const a = auds.get(c[1]);
+        if (!a) return;
+        if (c[0] === "src") a.src = c[2];
+        else if (c[0] === "play") { sndInit(); const p = a.play(); if (p && p.catch) p.catch(() => {}); }
+        else if (c[0] === "pause") a.pause();
+        else if (c[0] === "set" && ["volume", "loop", "muted", "currentTime", "playbackRate"].includes(c[2])) a[c[2]] = c[3];
+      }
+    } catch {}
+  }
 
   const langSel = $("lang");
   for (const k in LANGS) {
@@ -1234,6 +1734,7 @@ for i in range(1, 6):
     const k = running;
     running = null;
     write("--- stopped ---\n", "info");
+    sndReset();
     hideInput();
     startRt(k);
   });
