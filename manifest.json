@@ -1,14 +1,24 @@
 {
-  "name": "Pyro - Online Python",
-  "short_name": "Pyro",
-  "description": "Online Python editor that works offline",
+  "name": "Cronoff - Code Runner Online/Offline",
+  "short_name": "Cronoff",
+  "description": "Code runner that works online and offline",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#14171c",
   "theme_color": "#14171c",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }
