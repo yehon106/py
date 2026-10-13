@@ -9,12 +9,14 @@ const PYO_PATH = "/pyodide/v" + PYO_VERSION + "/full/";
 const PYO_BASE = CDN_ORIGIN + PYO_PATH;
 
 // Other languages. Keep these versions in sync with SQL_BASE / LUA_BASE in index.html.
-const LIB_PATHS = ["/npm/sql.js@1.14.2/dist/", "/npm/wasmoon@1.16.0/dist/"];
+// Ruby (ruby+stdlib.wasm, about 30 MB) is not pre-cached: it is saved the first time Ruby is used.
+const LIB_PATHS = ["/npm/sql.js@1.14.2/dist/", "/npm/wasmoon@1.16.0/dist/", "/npm/@ruby/3.4-wasm-wasi@2.8.1/dist/"];
 const LIBS = [
   CDN_ORIGIN + "/npm/sql.js@1.14.2/dist/sql-wasm.js",
   CDN_ORIGIN + "/npm/sql.js@1.14.2/dist/sql-wasm.wasm",
   CDN_ORIGIN + "/npm/wasmoon@1.16.0/dist/index.js",
   CDN_ORIGIN + "/npm/wasmoon@1.16.0/dist/glue.wasm",
+  CDN_ORIGIN + "/npm/@ruby/3.4-wasm-wasi@2.8.1/dist/browser.umd.js",
 ];
 
 const CORE = [
@@ -25,7 +27,7 @@ const CORE = [
   "pyodide-lock.json",
 ].map((f) => PYO_BASE + f);
 
-const OPTIONAL = ["/index.html", "/manifest.json", "/icon-192.png", "/icon-512.png"];
+const OPTIONAL = ["/index.html", "/manifest.json", "/jscpp.js", "/icon-192.png", "/icon-512.png"];
 
 // Re-wrap a response with the headers that keep the page cross-origin isolated.
 function isolate(res) {
@@ -52,7 +54,7 @@ self.addEventListener("install", (e) => {
           await pyo.put(u, r);
         })
       );
-      // SQL and Lua files: a failure here must not block the install; they are also saved when first used.
+      // SQL, Lua and Ruby loader files: a failure here must not block the install; they are also saved when first used.
       const lib = await caches.open(LIB_CACHE);
       await Promise.allSettled(
         LIBS.map(async (u) => {
