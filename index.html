@@ -69,6 +69,8 @@
   #code::selection { background: #2f4a6b; color: transparent; }
   #hl .k { color: var(--k); } #hl .b { color: var(--b); } #hl .s { color: var(--s); }
   #hl .n { color: var(--n); } #hl .c { color: var(--c); font-style: italic; }
+  #gfxWrap { display: none; flex: 0 0 auto; max-height: 75%; overflow: auto; background: #000; border-bottom: 1px solid var(--line); }
+  #gfx { display: block; max-width: 100%; height: auto; margin: 0 auto; outline: none; background: #000; }
   #out { flex: 1; min-width: 0; margin: 0; padding: 14px; background: var(--out); overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
   #out .err { color: var(--err); } #out .info { color: var(--info); }
   #inputRow { display: none; background: var(--out); border-top: 1px solid var(--line); padding: 8px 14px; gap: 8px; align-items: center; color: var(--muted); }
@@ -102,6 +104,7 @@
   <div id="resizer" role="separator" aria-label="Drag to resize"></div>
   <section id="outSec">
     <div class="tab"><b>Output</b><button id="clear">Clear</button></div>
+    <div id="gfxWrap"><canvas id="gfx" width="640" height="480" tabindex="0" aria-label="Graphics window"></canvas></div>
     <pre id="out" class="mono" aria-live="polite"></pre>
     <div id="inputRow" class="mono">
       <span>input:</span>
@@ -139,9 +142,49 @@ function emit(text, err) {
   else if (!otimer) otimer = setTimeout(flushOut, 16);
 }
 
+// ---- Graphics window: drawing commands are batched and sent to the page's canvas. ----
+let gi32 = null, gkeys = null, gq = [], gW = 640, gH = 480;
+function gfxPush(c) { gq.push(c); if (gq.length > 4000) gfxFlush(); }
+function gfxFlush() { if (gq.length) { postMessage({ type: "gfx", cmds: gq }); gq = []; } }
+const GKEYS = { left: 37, up: 38, right: 39, down: 40, space: 32, enter: 13, escape: 27, esc: 27, shift: 16, ctrl: 17, tab: 9, backspace: 8 };
+// gfx.* works the same from Python, Lua and Ruby (positional arguments only).
+const gfxApi = {
+  window(w, h) { gW = Math.min(4096, Math.max(1, w | 0 || 640)); gH = Math.min(4096, Math.max(1, h | 0 || 480)); gfxPush(["size", gW, gH]); },
+  clear(c) { gfxPush(["set", "fillStyle", c || "#000"]); gfxPush(["ctx", "fillRect", [0, 0, gW, gH]]); },
+  color(c, g, b) {
+    if (g !== undefined) c = "rgb(" + c + "," + g + "," + b + ")";
+    gfxPush(["set", "fillStyle", c]); gfxPush(["set", "strokeStyle", c]);
+  },
+  line_width(n) { gfxPush(["set", "lineWidth", n]); },
+  line(x1, y1, x2, y2) {
+    gfxPush(["ctx", "beginPath", []]); gfxPush(["ctx", "moveTo", [x1, y1]]);
+    gfxPush(["ctx", "lineTo", [x2, y2]]); gfxPush(["ctx", "stroke", []]);
+  },
+  rect(x, y, w, h, fill) { gfxPush(["ctx", fill === false ? "strokeRect" : "fillRect", [x, y, w, h]]); },
+  circle(x, y, r, fill) {
+    gfxPush(["ctx", "beginPath", []]); gfxPush(["ctx", "arc", [x, y, r, 0, Math.PI * 2]]);
+    gfxPush(["ctx", fill === false ? "stroke" : "fill", []]);
+  },
+  text(s, x, y, size) {
+    gfxPush(["set", "font", (size || 16) + "px sans-serif"]);
+    gfxPush(["set", "textBaseline", "top"]);
+    gfxPush(["ctx", "fillText", [String(s), x, y]]);
+  },
+  flip() { gfxFlush(); },
+  sleep(sec) { gfxFlush(); Atomics.wait(gi32, 3, 0, Math.max(0, (sec || 0) * 1000)); },
+  key(name) {
+    const n = String(name).toLowerCase();
+    const k = GKEYS[n] !== undefined ? GKEYS[n] : n.toUpperCase().charCodeAt(0);
+    return !!(gkeys && Atomics.load(gkeys, k & 255));
+  },
+  mouse_x() { return gi32 ? Atomics.load(gi32, 0) : 0; },
+  mouse_y() { return gi32 ? Atomics.load(gi32, 1) : 0; },
+  mouse_down() { return !!(gi32 && (Atomics.load(gi32, 2) & 1)); },
+};
+
 // Blocks until the page sends a line of input (SharedArrayBuffer + Atomics).
 function readLine() {
-  O.flush(); E.flush(); flushOut();
+  O.flush(); E.flush(); flushOut(); gfxFlush();
   postMessage({ type: "input" });
   Atomics.wait(i32, 0, 0);
   const n = i32[1];
@@ -156,12 +199,15 @@ onmessage = async (ev) => {
   if (m.type === "init") {
     i32 = new Int32Array(m.sab);
     bytes = new Uint8Array(m.sab, 8);
+    if (m.gsab) { gi32 = new Int32Array(m.gsab, 0, 4); gkeys = new Uint8Array(m.gsab, 16, 256); }
     try {
       const label = await LANG.init();
       postMessage({ type: "ready", version: label });
     } catch (e) {
       postMessage({ type: "fail", text: String(e) });
     }
+  } else if (m.type === "ev") {
+    if (self.__gfxEvent) self.__gfxEvent(m.ev);
   } else if (m.type === "run") {
     try {
       await LANG.run(m.code);
@@ -169,7 +215,7 @@ onmessage = async (ev) => {
       O.flush(); flushOut();
       postMessage({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
     } finally {
-      O.flush(); E.flush(); flushOut();
+      O.flush(); E.flush(); flushOut(); gfxFlush();
       postMessage({ type: "done" });
     }
   }
@@ -185,6 +231,7 @@ const LANG = {
     pyodide.setStdout({ raw: O.handle });
     pyodide.setStderr({ raw: E.handle });
     pyodide.setStdin({ stdin: () => readLine() });
+    pyodide.registerJsModule("gfx", gfxApi);   // import gfx
     return "Python " + pyodide.version;
   },
   async run(code) {
@@ -262,6 +309,7 @@ const LANG = {
       live.set(id, setTimeout(async () => {
         live.delete(id);
         try { await fn(...a); } catch (e) { report(e); }
+        gfxFlush();
         check();
       }, ms));
       return id;
@@ -270,6 +318,7 @@ const LANG = {
       const id = nid++;
       live.set(id, setInterval(() => {
         try { const r = fn(...a); if (r && r.catch) r.catch(report); } catch (e) { report(e); }
+        gfxFlush();
       }, ms));
       return id;
     };
@@ -277,9 +326,44 @@ const LANG = {
       const h = live.get(id);
       if (h !== undefined) { clearTimeout(h); clearInterval(h); live.delete(id); check(); }
     };
+
+    // Graphics: canvas / ctx / document / window behave like the browser ones (drawing shows in the panel).
+    const GM = new Set("save restore scale rotate translate transform setTransform resetTransform beginPath closePath moveTo lineTo bezierCurveTo quadraticCurveTo arc arcTo ellipse rect roundRect fill stroke clip clearRect fillRect strokeRect fillText strokeText setLineDash".split(" "));
+    const props = { fillStyle: "#000000", strokeStyle: "#000000", lineWidth: 1, font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic", globalAlpha: 1 };
+    let cw = 640, ch = 480;
+    const listeners = {};
+    let hold = null;   // a window with event handlers stays open until Stop
+    const addL = (t, f) => {
+      (listeners[t] = listeners[t] || []).push(f);
+      if (hold === null) { hold = nid++; live.set(hold, null); }
+    };
+    const rmL = (t, f) => { const a = listeners[t]; const i = a ? a.indexOf(f) : -1; if (i >= 0) a.splice(i, 1); };
+    self.__gfxEvent = (e) => {
+      const ev = Object.assign({ preventDefault() {}, stopPropagation() {} }, e);
+      (listeners[e.type] || []).slice().forEach((f) => { try { f(ev); } catch (x) { report(x); } });
+    };
+    const ctx = new Proxy({}, {
+      get(_, k) {
+        if (k === "canvas") return canvas;
+        if (k === "measureText") return (t) => ({ width: String(t).length * (parseFloat(props.font) || 10) * 0.55 });
+        if (GM.has(k)) return (...a) => { gfxPush(["ctx", k, a]); };
+        return props[k];
+      },
+      set(_, k, v) { props[k] = v; gfxPush(["set", k, v]); return true; },
+    });
+    const canvas = {
+      get width() { return cw; }, set width(v) { cw = v | 0; gfxPush(["size", cw, ch]); },
+      get height() { return ch; }, set height(v) { ch = v | 0; gfxPush(["size", cw, ch]); },
+      style: {}, focus() {}, getContext: () => ctx, addEventListener: addL, removeEventListener: rmL,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: cw, height: ch }),
+    };
+    const raf = (fn) => st(() => fn(performance.now()), 16);
+    const doc = { addEventListener: addL, removeEventListener: rmL, getElementById: () => canvas, querySelector: () => canvas, body: {} };
+    const win = { addEventListener: addL, removeEventListener: rmL, requestAnimationFrame: raf, cancelAnimationFrame: ct, innerWidth: 640, innerHeight: 480 };
+
     try {
-      const fn = new AsyncFunction("console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", code);
-      await fn(con, inp, inp, alertFn, st, si, ct, ct);
+      const fn = new AsyncFunction("console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "canvas", "ctx", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", "gfx", code);
+      await fn(con, inp, inp, alertFn, st, si, ct, ct, canvas, ctx, doc, win, raf, ct, gfxApi);
       if (live.size) await new Promise((r) => { waiter = r; });
     } catch (e) {
       report(e);
@@ -365,6 +449,7 @@ const LANG = {
       lua.global.set("__out", (s) => emit(String(s)));
       lua.global.set("__err", (s) => emit(String(s), true));
       lua.global.set("__in", (p) => readLine());
+      lua.global.set("gfx", gfxApi);
       await lua.doString(PRELUDE);
       await lua.global.loadString(code, "=main");
       await lua.global.run();
@@ -456,6 +541,7 @@ const LANG = {
     console.log = (t) => emit(String(t));
     console.warn = (t) => emit(String(t), true);
     self.__readLine = () => readLine();
+    self.gfx = gfxApi;
     const res = await fetch(BASE + "ruby+stdlib.wasm");
     if (!res.ok) throw new Error("Ruby download failed: " + res.status);
     rmod = await WebAssembly.compile(await res.arrayBuffer());
@@ -532,6 +618,26 @@ end
 $stdin = CronoffStdin.new
 Object.send(:remove_const, :STDIN)
 STDIN = $stdin
+
+# Graphics window: Gfx.window(400, 300); Gfx.rect(10, 10, 50, 50); Gfx.flip; Gfx.sleep(0.016) ...
+module Gfx
+  G = JS.global[:gfx]
+  %w[window clear color line_width line rect circle text flip sleep].each do |n|
+    define_singleton_method(n) { |*a| G.call(n, *a); nil }
+  end
+  def self.key?(k)
+    G.call(:key, k.to_s).to_s == "true"
+  end
+  def self.mouse_x
+    G.call(:mouse_x).to_s.to_f.to_i
+  end
+  def self.mouse_y
+    G.call(:mouse_y).to_s.to_f.to_i
+  end
+  def self.mouse_down?
+    G.call(:mouse_down).to_s == "true"
+  end
+end
 </script>
 
 <script>
@@ -1000,10 +1106,13 @@ for i in range(1, 6):
     const sab = new SharedArrayBuffer(8 + 65536);
     r.i32 = new Int32Array(sab);
     r.bytes = new Uint8Array(sab, 8);
+    r.gsab = new SharedArrayBuffer(16 + 256);   // mouse + key state for the graphics window
+    r.gi32 = new Int32Array(r.gsab, 0, 4);
+    r.gkeys = new Uint8Array(r.gsab, 16, 256);
     const url = URL.createObjectURL(new Blob([workerSource(key)], { type: "text/javascript" }));
     r.worker = new Worker(url);
     r.worker.onmessage = (ev) => onMsg(key, ev);
-    r.worker.postMessage({ type: "init", sab });
+    r.worker.postMessage({ type: "init", sab, gsab: r.gsab });
     r.state = "loading"; r.label = "";
     updateUI();
   }
@@ -1022,6 +1131,8 @@ for i in range(1, 6):
     } else if (m.type === "fail") {
       r.state = "fail";
       updateUI();
+    } else if (m.type === "gfx") {
+      gfxApply(m.cmds);
     } else if (m.type === "out") {
       write(m.text, m.err ? "err" : "");
     } else if (m.type === "input") {
@@ -1038,6 +1149,8 @@ for i in range(1, 6):
     const k = curKey();
     running = k;
     outEl.textContent = "";
+    gfxReset();
+    rt[k].gkeys.fill(0);
     updateUI();
     rt[k].worker.postMessage({ type: "run", code: codeEl.value });
   }
@@ -1053,6 +1166,53 @@ for i in range(1, 6):
     Atomics.notify(r.i32, 0);
     hideInput();
   }
+
+  /* ---------- graphics window: programs draw here, keys and mouse go back to them ---------- */
+  const gfxWrap = $("gfxWrap"), gfxEl = $("gfx"), gctx = gfxEl.getContext("2d");
+  const G_METHODS = new Set("save restore scale rotate translate transform setTransform resetTransform beginPath closePath moveTo lineTo bezierCurveTo quadraticCurveTo arc arcTo ellipse rect roundRect fill stroke clip clearRect fillRect strokeRect fillText strokeText setLineDash".split(" "));
+  const G_PROPS = new Set("fillStyle strokeStyle lineWidth font textAlign textBaseline globalAlpha lineCap lineJoin miterLimit lineDashOffset globalCompositeOperation shadowBlur shadowColor shadowOffsetX shadowOffsetY imageSmoothingEnabled".split(" "));
+  function gfxReset() {
+    gfxWrap.style.display = "none";
+    gfxEl.width = 640; gfxEl.height = 480;
+  }
+  function gfxApply(cmds) {
+    const wasHidden = gfxWrap.style.display !== "block";
+    gfxWrap.style.display = "block";
+    for (const c of cmds) {
+      try {
+        if (c[0] === "size") {
+          gfxEl.width = Math.min(4096, Math.max(1, c[1] | 0));
+          gfxEl.height = Math.min(4096, Math.max(1, c[2] | 0));
+        } else if (c[0] === "ctx") {
+          if (G_METHODS.has(c[1])) gctx[c[1]](...c[2]);
+        } else if (c[0] === "set") {
+          if (G_PROPS.has(c[1])) gctx[c[1]] = c[2];
+        }
+      } catch {}
+    }
+    if (wasHidden) gfxEl.focus({ preventScroll: true });
+  }
+  function sendEv(ev) { const r = rt[running]; if (r) r.worker.postMessage({ type: "ev", ev }); }
+  function gpos(e) {
+    const b = gfxEl.getBoundingClientRect();
+    return { x: Math.round((e.clientX - b.left) * gfxEl.width / (b.width || 1)), y: Math.round((e.clientY - b.top) * gfxEl.height / (b.height || 1)) };
+  }
+  ["mousemove", "mousedown", "mouseup", "click"].forEach((t) => gfxEl.addEventListener(t, (e) => {
+    if (!running) return;
+    const p = gpos(e), r = rt[running];
+    if (r && r.gi32) { r.gi32[0] = p.x; r.gi32[1] = p.y; r.gi32[2] = e.buttons; }
+    if (t === "mousedown") gfxEl.focus();
+    sendEv({ type: t, x: p.x, y: p.y, offsetX: p.x, offsetY: p.y, clientX: p.x, clientY: p.y, button: e.button, buttons: e.buttons });
+  }));
+  gfxEl.addEventListener("contextmenu", (e) => e.preventDefault());
+  ["keydown", "keyup"].forEach((t) => gfxEl.addEventListener(t, (e) => {
+    if (!running || e.key === "Tab" || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    const r = rt[running];
+    if (r && r.gkeys) r.gkeys[e.keyCode & 255] = t === "keydown" ? 1 : 0;
+    sendEv({ type: t, key: e.key, code: e.code, keyCode: e.keyCode, which: e.keyCode, repeat: e.repeat });
+  }));
+  gfxEl.addEventListener("blur", () => { const r = rt[running]; if (r && r.gkeys) r.gkeys.fill(0); });
 
   const langSel = $("lang");
   for (const k in LANGS) {
