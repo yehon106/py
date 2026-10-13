@@ -1,9 +1,9 @@
-/* Cro service worker: offline support + COOP/COEP headers (needed for SharedArrayBuffer) */
-const APP_CACHE = "cro-app-v1";
+/* Cronoff service worker: offline support + COOP/COEP headers (needed for SharedArrayBuffer) */
+const APP_CACHE = "cronoff-app-v1";
 const PYO_VERSION = "0.26.4";
 // Cache name kept as-is so existing visitors do not re-download Pyodide.
 const PYO_CACHE = "pyro-pyodide-" + PYO_VERSION;
-const LIB_CACHE = "cro-libs-v1";
+const LIB_CACHE = "cronoff-libs-v1";
 const CDN_ORIGIN = "https://cdn.jsdelivr.net";
 const PYO_PATH = "/pyodide/v" + PYO_VERSION + "/full/";
 const PYO_BASE = CDN_ORIGIN + PYO_PATH;
