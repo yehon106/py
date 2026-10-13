@@ -28,6 +28,8 @@
   button:disabled { opacity: .4; cursor: not-allowed; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #code:focus, #code:focus-visible { outline: none; }
+  #lang { font: inherit; font-size: 14px; font-weight: 600; color: var(--ink); background: var(--edit); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+  #lang:disabled { opacity: .4; cursor: not-allowed; }
   #run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 7px 22px; }
   #status { margin-left: auto; font-size: 13px; color: var(--muted); }
 
@@ -78,6 +80,7 @@
 <body>
 <header>
   <div class="brand"><span class="dot" aria-hidden="true"></span>Cronoff<small>Code runner &middot; online/offline</small></div>
+  <select id="lang" aria-label="Language" title="Change language (renames the file extension)"><option value="" disabled hidden>Language</option></select>
   <button id="run" disabled>Run</button>
   <button id="stop" disabled>Stop</button>
   <button id="download">Download</button>
@@ -839,6 +842,8 @@ for i in range(1, 6):
     const nm = k ? LANGS[k].name : "Code";
     codeEl.setAttribute("aria-label", nm + " code (Ctrl+Enter to run)");
     inputEl.setAttribute("aria-label", (running ? LANGS[running].name : nm) + " input");
+    langSel.value = k || "";
+    langSel.disabled = !!running;
     runBtn.disabled = !!running || !r || r.state !== "ready";
     stopBtn.disabled = !running;
     let t;
@@ -910,6 +915,20 @@ for i in range(1, 6):
     Atomics.notify(r.i32, 0);
     hideInput();
   }
+
+  const langSel = $("lang");
+  for (const k in LANGS) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = LANGS[k].name;
+    langSel.appendChild(o);
+  }
+  // Picking a language swaps the open file's extension (the language always follows the extension).
+  langSel.addEventListener("change", () => {
+    if (running || !langSel.value) { updateUI(); return; }
+    files[active].name = uniqueName(splitExt(files[active].name)[0] + "." + LANGS[langSel.value].exts[0], active);
+    saveFiles(); renderTabs(); refresh(); syncLang();
+    codeEl.focus();
+  });
 
   runBtn.addEventListener("click", run);
   stopBtn.addEventListener("click", () => {
