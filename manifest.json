@@ -1,7 +1,7 @@
 {
   "name": "Cronoff - Code Runner Online/Offline",
   "short_name": "Cronoff",
-  "description": "Code runner that works online and offline",
+  "description": "Code runner that works online and offline. Made by yehon106",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
