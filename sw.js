@@ -1,10 +1,21 @@
-/* Pyro service worker: offline support + COOP/COEP headers (needed for SharedArrayBuffer) */
-const APP_CACHE = "pyro-app-v1";
+/* Cro service worker: offline support + COOP/COEP headers (needed for SharedArrayBuffer) */
+const APP_CACHE = "cro-app-v1";
 const PYO_VERSION = "0.26.4";
+// Cache name kept as-is so existing visitors do not re-download Pyodide.
 const PYO_CACHE = "pyro-pyodide-" + PYO_VERSION;
+const LIB_CACHE = "cro-libs-v1";
 const CDN_ORIGIN = "https://cdn.jsdelivr.net";
 const PYO_PATH = "/pyodide/v" + PYO_VERSION + "/full/";
 const PYO_BASE = CDN_ORIGIN + PYO_PATH;
+
+// Other languages. Keep these versions in sync with SQL_BASE / LUA_BASE in index.html.
+const LIB_PATHS = ["/npm/sql.js@1.14.2/dist/", "/npm/wasmoon@1.16.0/dist/"];
+const LIBS = [
+  CDN_ORIGIN + "/npm/sql.js@1.14.2/dist/sql-wasm.js",
+  CDN_ORIGIN + "/npm/sql.js@1.14.2/dist/sql-wasm.wasm",
+  CDN_ORIGIN + "/npm/wasmoon@1.16.0/dist/index.js",
+  CDN_ORIGIN + "/npm/wasmoon@1.16.0/dist/glue.wasm",
+];
 
 const CORE = [
   "pyodide.js",
@@ -41,6 +52,16 @@ self.addEventListener("install", (e) => {
           await pyo.put(u, r);
         })
       );
+      // SQL and Lua files: a failure here must not block the install; they are also saved when first used.
+      const lib = await caches.open(LIB_CACHE);
+      await Promise.allSettled(
+        LIBS.map(async (u) => {
+          if (await lib.match(u)) return;
+          const r = await fetch(u, { mode: "cors", credentials: "omit" });
+          if (!r.ok) throw new Error("Library precache failed: " + u + " " + r.status);
+          await lib.put(u, r);
+        })
+      );
       const app = await caches.open(APP_CACHE);
       await app.add(new Request("/", { cache: "reload" }));
       await Promise.allSettled(OPTIONAL.map((u) => app.add(new Request(u, { cache: "reload" }))));
@@ -52,7 +73,7 @@ self.addEventListener("activate", (e) => {
   e.waitUntil(
     (async () => {
       for (const k of await caches.keys()) {
-        if (k !== APP_CACHE && k !== PYO_CACHE) await caches.delete(k);
+        if (k !== APP_CACHE && k !== PYO_CACHE && k !== LIB_CACHE) await caches.delete(k);
       }
       await self.clients.claim();
     })()
@@ -78,9 +99,9 @@ async function networkFirst(req) {
   }
 }
 
-// Pyodide files and packages (numpy etc.): cache first, save anything new that gets fetched.
-async function pyodideCacheFirst(req) {
-  const cache = await caches.open(PYO_CACHE);
+// CDN files (Pyodide + packages like numpy, sql.js, wasmoon): cache first, save anything new that gets fetched.
+async function cdnCacheFirst(cacheName, req) {
+  const cache = await caches.open(cacheName);
   const hit = await cache.match(req.url);
   if (hit) return isolate(hit);
   const res = await fetch(req.url, { mode: "cors", credentials: "omit" });
@@ -96,6 +117,8 @@ self.addEventListener("fetch", (e) => {
     if (url.pathname === "/sw.js" || url.pathname.startsWith("/_vercel")) return;
     e.respondWith(networkFirst(req));
   } else if (url.origin === CDN_ORIGIN && url.pathname.startsWith(PYO_PATH)) {
-    e.respondWith(pyodideCacheFirst(req));
+    e.respondWith(cdnCacheFirst(PYO_CACHE, req));
+  } else if (url.origin === CDN_ORIGIN && LIB_PATHS.some((p) => url.pathname.startsWith(p))) {
+    e.respondWith(cdnCacheFirst(LIB_CACHE, req));
   }
 });
