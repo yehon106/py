@@ -439,6 +439,101 @@ fm.read = function(self, ...)
 end
 </script>
 
+<script id="w-ruby" type="text/plain">
+let rmod, nextVM = null;
+
+async function makeVM() {
+  const { DefaultRubyVM } = self["ruby-wasm-wasi"];
+  const { vm } = await DefaultRubyVM(rmod);
+  vm.eval(PRELUDE);
+  return vm;
+}
+
+const LANG = {
+  async init() {
+    importScripts(BASE + "browser.umd.js");
+    // Ruby's stdout/stderr arrive through console.log / console.warn; send them to the page instead.
+    console.log = (t) => emit(String(t));
+    console.warn = (t) => emit(String(t), true);
+    self.__readLine = () => readLine();
+    const res = await fetch(BASE + "ruby+stdlib.wasm");
+    if (!res.ok) throw new Error("Ruby download failed: " + res.status);
+    rmod = await WebAssembly.compile(await res.arrayBuffer());
+    nextVM = makeVM();
+    const vm = await nextVM;
+    return "Ruby " + vm.eval("RUBY_VERSION").toString();
+  },
+  async run(code) {
+    const vm = await nextVM;      // a fresh interpreter for every run, prepared ahead of time
+    nextVM = null;
+    try {
+      vm.eval(code);
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (!/\(SystemExit\)/.test(msg)) throw e;
+    } finally {
+      nextVM = makeVM();
+      nextVM.catch(() => {});
+    }
+  },
+};
+</script>
+
+<script id="w-cpp" type="text/plain">
+const LANG = {
+  async init() {
+    importScripts(BASE + "jscpp.js");
+    return "C/C++ (JSCPP)";
+  },
+  async run(code) {
+    // JSCPP asks for input only when the program reads it; we answer with a line typed in the page.
+    JSCPP.run(code, "", {
+      stdio: { drain: () => readLine() + "\n", write: (s) => emit(s) },
+      unsigned_overflow: "warn",
+    });
+  },
+};
+</script>
+
+<script id="ruby-prelude" type="text/plain">
+# Runs first inside every Ruby run: routes output and gets through the page.
+require "js"
+$stdout.sync = true
+$stderr.sync = true
+
+class CronoffStdin
+  def gets(*)
+    JS.global.call(:__readLine).to_s + "\n"
+  end
+  def readline(*)
+    gets
+  end
+  def read(*)
+    gets
+  end
+  def each_line
+    return to_enum(:each_line) unless block_given?
+    loop { yield gets }
+  end
+  def tty?
+    false
+  end
+end
+
+module Kernel
+  def gets(*)
+    $stdin.gets
+  end
+  def readline(*)
+    $stdin.gets
+  end
+end
+
+$stdin = CronoffStdin.new
+Object.send(:remove_const, :STDIN)
+STDIN = $stdin
+</script>
+
 <script>
   const DEFAULT_CODE = `name = input("Your name? ")
 print(f"Hello, {name}!")
@@ -457,6 +552,7 @@ for i in range(1, 6):
   // Keep these two versions in sync with LIB_PATHS / LIBS in sw.js.
   const SQL_BASE = "https://cdn.jsdelivr.net/npm/sql.js@1.14.2/dist/";
   const LUA_BASE = "https://cdn.jsdelivr.net/npm/wasmoon@1.16.0/dist/";
+  const RUBY_BASE = "https://cdn.jsdelivr.net/npm/@ruby/3.4-wasm-wasi@2.8.1/dist/";
   const words = (s) => new Set(s.split(" "));
   const LANGS = {
     py: {
@@ -519,6 +615,48 @@ for i in range(1, 6):
       kw: words("and break do else elseif end false for function goto if in local nil not or repeat return then true until while"),
       bi: words("print io os string table math tostring tonumber type pairs ipairs next select error assert pcall xpcall require setmetatable getmetatable rawget rawset rawequal rawlen unpack coroutine utf8 load dofile"),
     },
+    rb: {
+      name: "Ruby", exts: ["rb"], worker: "w-ruby", mime: "text/x-ruby",
+      probe: RUBY_BASE + "ruby+stdlib.wasm",
+      extra: () => "const BASE = " + JSON.stringify(RUBY_BASE) + ";\nconst PRELUDE = " + JSON.stringify($("ruby-prelude").textContent) + ";\n",
+      sample: [
+        'print "Your name? "',
+        "name = gets.chomp",
+        'puts "Hello, #{name}!"',
+        "",
+        "(1..5).each do |i|",
+        '  puts "#{i} squared is #{i * i}"',
+        "end",
+        "",
+      ].join("\n"),
+      token: /::|(#.*$|^=begin[\s\S]*?^=end)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\\n])*`|:[A-Za-z_]\w*[?!]?)|\b(\d[\d_]*\.?\d*)\b|\b([A-Za-z_]\w*[?!]?)/gm,
+      kw: words("BEGIN END alias and begin break case class def defined? do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield"),
+      bi: words("puts print p pp gets require require_relative attr_accessor attr_reader attr_writer include extend lambda proc raise loop format sprintf printf Integer Float String Array Hash Struct Comparable Enumerable Kernel Math Time Rational Complex"),
+    },
+    cpp: {
+      name: "C/C++", exts: ["cpp", "cc", "cxx", "c"], worker: "w-cpp", mime: "text/x-c++src",
+      probe: "/jscpp.js",
+      extra: () => "const BASE = " + JSON.stringify(location.origin + "/") + ";\n",
+      sample: [
+        "#include <iostream>",
+        "using namespace std;",
+        "",
+        "int main() {",
+        "  char name[50];",
+        '  cout << "Your name? ";',
+        "  cin >> name;",
+        '  cout << "Hello, " << name << "!" << endl;',
+        "  for (int i = 1; i <= 5; i++) {",
+        '    cout << i << " squared is " << i * i << endl;',
+        "  }",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      token: /(\/\/.*$|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|#[ \t]*include[ \t]*[<"][^>"\n]*[>"])|\b(0[xX][\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?[fFlLuU]*)\b|(#[ \t]*[a-z]+|\b[A-Za-z_]\w*)\b/gm,
+      kw: words("auto break case char class const continue default do double else enum extern float for goto if int long namespace new private protected public return short signed sizeof static struct switch typedef union unsigned using virtual void volatile while bool true false nullptr #include #define #ifdef #ifndef #endif #if #else #pragma #undef"),
+      bi: words("cout cin cerr endl printf scanf puts getchar putchar malloc free strlen strcpy strcmp sqrt pow abs main setw setprecision NULL EOF"),
+    },
   };
   const EXT = Object.create(null);
   for (const k in LANGS) for (const e of LANGS[k].exts) EXT[e] = k;
@@ -542,7 +680,7 @@ for i in range(1, 6):
     re.lastIndex = 0;
     while ((m = re.exec(src))) {
       out += esc(src.slice(last, m.index));
-      const t = m[0], w = L.ci ? t.toUpperCase() : t;
+      const t = m[0], w = L.ci ? t.toUpperCase() : t.charAt(0) === "#" ? t.replace(/[ \t]/g, "") : t;
       if (m[1]) out += '<span class="c">' + esc(t) + "</span>";
       else if (m[2]) out += '<span class="s">' + esc(t) + "</span>";
       else if (m[3]) out += '<span class="n">' + t + "</span>";
