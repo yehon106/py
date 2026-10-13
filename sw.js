@@ -1,4 +1,4 @@
-/* Cronoff service worker: offline support + COOP/COEP headers (needed for SharedArrayBuffer) */
+/* Cronoff (made by yehon106) service worker: offline support + COOP/COEP headers (needed for SharedArrayBuffer) */
 const APP_CACHE = "cronoff-app-v1";
 const PYO_VERSION = "0.26.4";
 // Cache name kept as-is so existing visitors do not re-download Pyodide.
