@@ -1,21 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<!-- קישור לקובץ המניפסט של האפליקציה -->
-<link rel="manifest" href="/manifest.json">
-
-<!-- הגדרת האייקון לטאב בדפדפן (הדפדפן יקטין אותו אוטומטית) -->
-<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
-
-<!-- הגדרת האייקון למכשירי אפל (iOS) למסך הבית -->
-<link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png">
-
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pyro - Online Python</title>
+<title>Cro - Code Runner Online/Offline</title>
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#14171c">
-<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
+<link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png">
 <style>
   :root {
     --bg: #14171c; --bar: #1b1f26; --edit: #1d2128; --line: #2b313b;
@@ -28,11 +20,14 @@
   body { background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
   header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bar); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .brand { font-weight: 800; font-size: 20px; letter-spacing: -0.02em; margin-right: 10px; display: flex; align-items: center; gap: 8px; }
+  .brand small { font-size: 12px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-left: 4px; }
+  @media (max-width: 900px) { .brand small { display: none; } }
   .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 8px 0 0 -3px var(--s); margin-right: 6px; }
   button { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 7px 14px; border-radius: 6px; }
   button:hover:not(:disabled) { border-color: var(--muted); }
   button:disabled { opacity: .4; cursor: not-allowed; }
-  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #code:focus, #code:focus-visible { outline: none; }
   #run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 7px 22px; }
   #status { margin-left: auto; font-size: 13px; color: var(--muted); }
 
@@ -52,6 +47,15 @@
 
   .tab { padding: 8px 14px; font-size: 13px; color: var(--muted); background: var(--bar); border-bottom: 1px solid var(--line); display: flex; align-items: center; }
   .tab b { color: var(--ink); font-weight: 600; border-bottom: 2px solid var(--accent); padding-bottom: 6px; margin-bottom: -9px; }
+  #tabs { gap: 2px; padding: 0 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; white-space: nowrap; }
+  #tabs::-webkit-scrollbar { display: none; }
+  .ftab { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 8px 10px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
+  .ftab:hover { color: var(--ink); }
+  .ftab.active { color: var(--ink); border-bottom-color: var(--accent); }
+  .ftab .x { border: 0; padding: 0 5px; font-size: 16px; font-weight: 400; line-height: 1.2; color: var(--muted); }
+  .ftab .x:hover:not(:disabled) { color: var(--err); }
+  #tabs #newTab { flex: 0 0 auto; border: 0; padding: 4px 10px; font-size: 18px; line-height: 1; color: var(--muted); align-self: center; }
+  #fnameInput { font: inherit; font-weight: 600; color: var(--ink); background: var(--edit); border: 1px solid var(--accent); border-radius: 4px; padding: 2px 6px; width: 190px; max-width: 100%; outline: none; }
   #clear { margin-left: auto; padding: 2px 10px; font-size: 12px; }
   .mono { font: 400 14.5px/1.6 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; tab-size: 4; }
   .editor { flex: 1; min-height: 0; display: flex; background: var(--edit); }
@@ -59,11 +63,11 @@
   .codewrap { position: relative; flex: 1; min-width: 0; }
   #hl, #code { position: absolute; inset: 0; margin: 0; padding: 14px 14px 40px 14px; white-space: pre; border: 0; }
   #hl { overflow: hidden; pointer-events: none; color: var(--ink); }
-  #code { background: transparent; color: transparent; caret-color: var(--ink); resize: none; overflow: auto; width: 100%; height: 100%; }
+  #code { background: transparent; color: transparent; caret-color: var(--ink); resize: none; overflow-x: hidden; overflow-y: auto; width: 100%; height: 100%; }
   #code::selection { background: #2f4a6b; color: transparent; }
   #hl .k { color: var(--k); } #hl .b { color: var(--b); } #hl .s { color: var(--s); }
   #hl .n { color: var(--n); } #hl .c { color: var(--c); font-style: italic; }
-  #out { flex: 1; margin: 0; padding: 14px; background: var(--out); overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  #out { flex: 1; min-width: 0; margin: 0; padding: 14px; background: var(--out); overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
   #out .err { color: var(--err); } #out .info { color: var(--info); }
   #inputRow { display: none; background: var(--out); border-top: 1px solid var(--line); padding: 8px 14px; gap: 8px; align-items: center; color: var(--muted); }
   #inputRow.show { display: flex; }
@@ -73,22 +77,22 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="dot" aria-hidden="true"></span>pyro</div>
+  <div class="brand"><span class="dot" aria-hidden="true"></span>Cro<small>Code runner &middot; online/offline</small></div>
   <button id="run" disabled>Run</button>
   <button id="stop" disabled>Stop</button>
   <button id="download">Download</button>
   <button id="rotate" title="Move the output panel">Output: Right</button>
   <button id="reset">Reset</button>
-  <span id="status">Loading Python...</span>
+  <span id="status">Loading Cro...</span>
 </header>
 <main id="main" data-layout="right">
   <section id="editorSec">
-    <div class="tab"><b>main.py</b></div>
+    <div class="tab" id="tabs" role="tablist"></div>
     <div class="editor">
       <div id="gutter" class="mono" aria-hidden="true"></div>
       <div class="codewrap">
         <pre id="hl" class="mono" aria-hidden="true"></pre>
-        <textarea id="code" class="mono" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code (Ctrl+Enter to run)"></textarea>
+        <textarea id="code" class="mono" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Code (Ctrl+Enter to run)"></textarea>
       </div>
     </div>
   </section>
@@ -98,15 +102,14 @@
     <pre id="out" class="mono" aria-live="polite"></pre>
     <div id="inputRow" class="mono">
       <span>input:</span>
-      <input id="inputEl" class="mono" autocomplete="off" spellcheck="false" aria-label="Python input">
+      <input id="inputEl" class="mono" autocomplete="off" spellcheck="false" aria-label="Input">
       <button id="send">Send</button>
     </div>
   </section>
 </main>
 
-<script id="worker-src" type="text/plain">
-importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
-let pyodide, i32, bytes;
+<script id="w-common" type="text/plain">
+let i32, bytes;
 const dec = new TextDecoder();
 function mk(err) {
   const b = [];
@@ -117,45 +120,320 @@ function mk(err) {
   return { flush, handle: (c) => { b.push(c & 255); if ((c & 255) === 10) flush(); } };
 }
 const O = mk(false), E = mk(true);
+
+// Text output for runtimes that give us strings (JavaScript, SQL, Lua). Batched so big loops stay fast.
+let obuf = "", oerr = false, otimer = 0;
+function flushOut() {
+  if (otimer) { clearTimeout(otimer); otimer = 0; }
+  if (obuf) { postMessage({ type: "out", err: oerr, text: obuf }); obuf = ""; }
+}
+function emit(text, err) {
+  err = !!err;
+  if (obuf && oerr !== err) flushOut();
+  oerr = err;
+  obuf += text;
+  if (obuf.length > 4096) flushOut();
+  else if (!otimer) otimer = setTimeout(flushOut, 16);
+}
+
+// Blocks until the page sends a line of input (SharedArrayBuffer + Atomics).
+function readLine() {
+  O.flush(); E.flush(); flushOut();
+  postMessage({ type: "input" });
+  Atomics.wait(i32, 0, 0);
+  const n = i32[1];
+  const s = dec.decode(bytes.slice(0, n));
+  Atomics.store(i32, 0, 0);
+  return s;
+}
+
+// Each language file below defines LANG = { init(): label, run(code) }.
 onmessage = async (ev) => {
   const m = ev.data;
   if (m.type === "init") {
     i32 = new Int32Array(m.sab);
     bytes = new Uint8Array(m.sab, 8);
     try {
-      pyodide = await loadPyodide();
-      pyodide.setStdout({ raw: O.handle });
-      pyodide.setStderr({ raw: E.handle });
-      pyodide.setStdin({
-        stdin: () => {
-          O.flush(); E.flush();
-          postMessage({ type: "input" });
-          Atomics.wait(i32, 0, 0);
-          const n = i32[1];
-          const s = dec.decode(bytes.slice(0, n));
-          Atomics.store(i32, 0, 0);
-          return s;
-        },
-      });
-      postMessage({ type: "ready", version: pyodide.version });
+      const label = await LANG.init();
+      postMessage({ type: "ready", version: label });
     } catch (e) {
       postMessage({ type: "fail", text: String(e) });
     }
   } else if (m.type === "run") {
-    const g = pyodide.globals.get("dict")();
     try {
-      await pyodide.loadPackagesFromImports(m.code);
-      await pyodide.runPythonAsync(m.code, { globals: g });
+      await LANG.run(m.code);
     } catch (e) {
-      O.flush();
-      postMessage({ type: "out", err: true, text: String(e.message || e) + "\n" });
+      O.flush(); flushOut();
+      postMessage({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
     } finally {
-      g.destroy();
-      O.flush(); E.flush();
+      O.flush(); E.flush(); flushOut();
       postMessage({ type: "done" });
     }
   }
 };
+</script>
+
+<script id="w-py" type="text/plain">
+let pyodide;
+const LANG = {
+  async init() {
+    importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
+    pyodide = await loadPyodide();
+    pyodide.setStdout({ raw: O.handle });
+    pyodide.setStderr({ raw: E.handle });
+    pyodide.setStdin({ stdin: () => readLine() });
+    return "Python " + pyodide.version;
+  },
+  async run(code) {
+    const g = pyodide.globals.get("dict")();
+    try {
+      await pyodide.loadPackagesFromImports(code);
+      await pyodide.runPythonAsync(code, { globals: g });
+    } finally {
+      g.destroy();
+    }
+  },
+};
+</script>
+
+<script id="w-js" type="text/plain">
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+// Prints values roughly the way Node does: strings raw at the top level, objects expanded.
+function ins(v, d, seen) {
+  if (typeof v === "string") return d ? "'" + v + "'" : v;
+  if (v === null || v === undefined) return String(v);
+  if (typeof v === "bigint") return v + "n";
+  if (typeof v === "function") return "[Function" + (v.name ? ": " + v.name : " (anonymous)") + "]";
+  if (typeof v === "symbol") return v.toString();
+  if (typeof v !== "object") return String(v);
+  if (v instanceof Error) return d ? "[" + v.name + ": " + v.message + "]" : v.name + ": " + v.message;
+  if (v instanceof Date) return isNaN(v) ? "Invalid Date" : v.toISOString();
+  if (seen.indexOf(v) >= 0) return "[Circular]";
+  if (d > 3) return Array.isArray(v) ? "[Array]" : "[Object]";
+  seen = seen.concat([v]);
+  const q = (x) => ins(x, d + 1, seen);
+  let items, pre = "", open = "{", close = "}";
+  if (Array.isArray(v)) { items = v.map(q); open = "["; close = "]"; }
+  else if (v instanceof Map) { pre = "Map(" + v.size + ") "; items = Array.from(v, (e) => q(e[0]) + " => " + q(e[1])); }
+  else if (v instanceof Set) { pre = "Set(" + v.size + ") "; items = Array.from(v, q); }
+  else {
+    items = Object.keys(v).map((k) => (/^[A-Za-z_$][\w$]*$/.test(k) ? k : "'" + k + "'") + ": " + q(v[k]));
+    const cn = v.constructor && v.constructor.name;
+    if (cn && cn !== "Object") pre = cn + " ";
+  }
+  if (!items.length) return pre + open + close;
+  const one = pre + open + " " + items.join(", ") + " " + close;
+  if (one.length <= 72 && one.indexOf("\n") < 0) return one;
+  const pad = "  ".repeat(d + 1);
+  return pre + open + "\n" + items.map((s) => pad + s).join(",\n") + "\n" + "  ".repeat(d) + close;
+}
+function report(e) {
+  emit((e && e.name ? e.name + ": " + e.message : ins(e, 0, [])) + "\n", true);
+}
+
+const LANG = {
+  async init() {
+    self.addEventListener("unhandledrejection", (ev) => { ev.preventDefault(); report(ev.reason); });
+    return "JavaScript";
+  },
+  async run(code) {
+    const say = (err) => (...a) => emit(a.map((x) => ins(x, 0, [])).join(" ") + "\n", err);
+    const clocks = {};
+    const con = {
+      log: say(false), info: say(false), debug: say(false), dir: say(false), table: say(false),
+      error: say(true), warn: say(true), clear() {},
+      assert(ok, ...a) { if (!ok) emit("Assertion failed" + (a.length ? ": " + a.map((x) => ins(x, 0, [])).join(" ") : "") + "\n", true); },
+      time(l = "default") { clocks[l] = performance.now(); },
+      timeEnd(l = "default") { if (l in clocks) { emit(l + ": " + (performance.now() - clocks[l]).toFixed(3) + "ms\n", false); delete clocks[l]; } },
+    };
+    const inp = (p) => { if (p !== undefined) emit(String(p)); return readLine(); };
+    const alertFn = (x) => emit(String(x) + "\n");
+
+    // Timers are tracked so the run only "finishes" once nothing is left scheduled.
+    const live = new Map();
+    let nid = 1, waiter = null;
+    const check = () => { if (!live.size && waiter) { const w = waiter; waiter = null; w(); } };
+    const st = (fn, ms, ...a) => {
+      const id = nid++;
+      live.set(id, setTimeout(async () => {
+        live.delete(id);
+        try { await fn(...a); } catch (e) { report(e); }
+        check();
+      }, ms));
+      return id;
+    };
+    const si = (fn, ms, ...a) => {
+      const id = nid++;
+      live.set(id, setInterval(() => {
+        try { const r = fn(...a); if (r && r.catch) r.catch(report); } catch (e) { report(e); }
+      }, ms));
+      return id;
+    };
+    const ct = (id) => {
+      const h = live.get(id);
+      if (h !== undefined) { clearTimeout(h); clearInterval(h); live.delete(id); check(); }
+    };
+    try {
+      const fn = new AsyncFunction("console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", code);
+      await fn(con, inp, inp, alertFn, st, si, ct, ct);
+      if (live.size) await new Promise((r) => { waiter = r; });
+    } catch (e) {
+      report(e);
+      live.forEach((h) => { clearTimeout(h); clearInterval(h); });
+      live.clear();
+    }
+  },
+};
+</script>
+
+<script id="w-sql" type="text/plain">
+let SQL;
+
+function cell(v) {
+  if (v === null) return "NULL";
+  if (v instanceof Uint8Array) return "<blob " + v.length + " bytes>";
+  return String(v).replace(/\r?\n/g, "\\n");
+}
+function table(cols, rows) {
+  const MAX = 1000;
+  const shown = rows.length > MAX ? rows.slice(0, MAX) : rows;
+  const body = shown.map((r) => r.map(cell));
+  const w = cols.map((c) => c.length);
+  for (const r of body) for (let i = 0; i < r.length; i++) if (r[i].length > w[i]) w[i] = r[i].length;
+  const line = (r) => r.map((c, i) => c.padEnd(w[i])).join(" | ").replace(/\s+$/, "");
+  let s = line(cols) + "\n" + w.map((n) => "-".repeat(n)).join("-+-") + "\n";
+  for (const r of body) s += line(r) + "\n";
+  if (rows.length > MAX) s += "... " + (rows.length - MAX) + " more rows not shown\n";
+  return s + "(" + rows.length + (rows.length === 1 ? " row)" : " rows)") + "\n\n";
+}
+
+const LANG = {
+  async init() {
+    importScripts(BASE + "sql-wasm.js");
+    SQL = await initSqlJs({ locateFile: (f) => BASE + f });
+    const db = new SQL.Database();
+    const v = db.exec("select sqlite_version()")[0].values[0][0];
+    db.close();
+    return "SQLite " + v;
+  },
+  async run(code) {
+    const db = new SQL.Database();   // fresh in-memory database for every run
+    let shown = 0;
+    try {
+      // input('prompt') is available inside queries: SELECT input('Name? ');
+      db.create_function("input", (p) => { if (p !== null && p !== undefined) emit(String(p)); return readLine(); });
+      for (const stmt of db.iterateStatements(code)) {
+        const cols = stmt.getColumnNames();
+        if (cols.length) {
+          const rows = [];
+          while (stmt.step()) rows.push(stmt.get());
+          emit(table(cols, rows));
+          shown++;
+        } else {
+          stmt.step();
+        }
+      }
+      if (!shown) emit("OK\n");
+    } catch (e) {
+      throw new Error("SQL error: " + ((e && e.message) || e));
+    } finally {
+      db.close();
+    }
+  },
+};
+</script>
+
+<script id="w-lua" type="text/plain">
+let factory;
+
+const LANG = {
+  async init() {
+    importScripts(BASE + "index.js");
+    factory = new wasmoon.LuaFactory(BASE + "glue.wasm");
+    const lua = await factory.createEngine();
+    const v = await lua.doString("return _VERSION");
+    lua.global.close();
+    return String(v);
+  },
+  async run(code) {
+    const lua = await factory.createEngine();   // fresh Lua state for every run
+    try {
+      lua.global.set("__out", (s) => emit(String(s)));
+      lua.global.set("__err", (s) => emit(String(s), true));
+      lua.global.set("__in", (p) => readLine());
+      await lua.doString(PRELUDE);
+      await lua.global.loadString(code, "=main");
+      await lua.global.run();
+    } finally {
+      lua.global.close();
+    }
+  },
+};
+</script>
+
+<script id="lua-prelude" type="text/plain">
+-- Runs first inside every Lua run: routes print / io.write / io.read through the page.
+local out, eout, rd = __out, __err, __in
+__out, __err, __in = nil, nil, nil
+
+local function join(sep, ...)
+  local t = {}
+  for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
+  return table.concat(t, sep)
+end
+
+function print(...) out(join("\t", ...) .. "\n") end
+
+local function writer(f)
+  return function(...)
+    for i = 1, select("#", ...) do
+      local v = select(i, ...)
+      local ty = type(v)
+      if ty ~= "string" and ty ~= "number" then
+        error("bad argument #" .. i .. " to 'write' (string expected, got " .. ty .. ")", 3)
+      end
+      f(tostring(v))
+    end
+  end
+end
+local wout, werr = writer(out), writer(eout)
+
+local function readfmt(fmt)
+  local s = rd()
+  if s == nil then return nil end
+  fmt = tostring(fmt or "l"):gsub("^%*", "")
+  local c = fmt:sub(1, 1)
+  if c == "n" then return tonumber(s) end
+  if c == "L" or c == "a" then return s .. "\n" end
+  return s
+end
+local function read(...)
+  local n = select("#", ...)
+  if n == 0 then return readfmt("l") end
+  local res = {}
+  for i = 1, n do
+    local v = readfmt((select(i, ...)))
+    res[i] = v
+    if v == nil then return table.unpack(res, 1, i) end
+  end
+  return table.unpack(res, 1, n)
+end
+
+local stdout, stderr, stdin = io.stdout, io.stderr, io.stdin
+io.write = function(...) wout(...) return stdout end
+io.read = read
+local fm = getmetatable(stdout).__index
+local rawwrite, rawread = fm.write, fm.read
+fm.write = function(self, ...)
+  if self == stdout then wout(...) return self end
+  if self == stderr then werr(...) return self end
+  return rawwrite(self, ...)
+end
+fm.read = function(self, ...)
+  if self == stdin then return read(...) end
+  return rawread(self, ...)
+end
 </script>
 
 <script>
@@ -172,23 +450,101 @@ for i in range(1, 6):
         inputRow = $("inputRow"), inputEl = $("inputEl"),
         mainEl = $("main"), outSec = $("outSec"), resizer = $("resizer");
 
-  /* ---------- editor: highlight + line numbers ---------- */
-  const KW = new Set("False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" "));
-  const BI = new Set("print input len range int str float list dict set tuple bool sum min max abs sorted enumerate zip map filter open type isinstance round reversed any all".split(" "));
-  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const TOKEN = /(#.*$)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)\b/gm;
+  /* ---------- languages: the file extension picks one ---------- */
+  // Keep these two versions in sync with LIB_PATHS / LIBS in sw.js.
+  const SQL_BASE = "https://cdn.jsdelivr.net/npm/sql.js@1.14.2/dist/";
+  const LUA_BASE = "https://cdn.jsdelivr.net/npm/wasmoon@1.16.0/dist/";
+  const words = (s) => new Set(s.split(" "));
+  const LANGS = {
+    py: {
+      name: "Python", exts: ["py"], worker: "w-py", mime: "text/x-python",
+      probe: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.asm.wasm",
+      sample: DEFAULT_CODE,
+      token: /(#.*$)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)\b/gm,
+      kw: words("False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield"),
+      bi: words("print input len range int str float list dict set tuple bool sum min max abs sorted enumerate zip map filter open type isinstance round reversed any all"),
+    },
+    js: {
+      name: "JavaScript", exts: ["js", "mjs"], worker: "w-js", mime: "text/javascript",
+      probe: "/",
+      sample: [
+        'const name = input("Your name? ");',
+        "console.log(`Hello, ${name}!`);",
+        "",
+        "for (let i = 1; i <= 5; i++) {",
+        '  console.log(i, "squared is", i * i);',
+        "}",
+        "",
+      ].join("\n"),
+      token: /(\/\/.*$|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\[\s\S]|[^`\\])*`)|\b(0[xX][\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b|\b([A-Za-z_$][\w$]*)\b/gm,
+      kw: words("async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield null undefined true false"),
+      bi: words("console Math JSON Object Array String Number Boolean Date RegExp Map Set Promise Symbol BigInt Error parseInt parseFloat isNaN input prompt alert setTimeout setInterval clearTimeout clearInterval fetch"),
+    },
+    sql: {
+      name: "SQL", exts: ["sql"], worker: "w-sql", mime: "application/sql", ci: true,
+      probe: SQL_BASE + "sql-wasm.wasm",
+      extra: () => "const BASE = " + JSON.stringify(SQL_BASE) + ";\n",
+      sample: [
+        "CREATE TABLE people (name TEXT, age INTEGER);",
+        "INSERT INTO people VALUES ('Ada', 36), ('Alan', 41), ('Grace', 45);",
+        "",
+        "-- input() asks for a value while the query runs",
+        "SELECT 'Hello, ' || input('Your name? ') || '!' AS greeting;",
+        "",
+        "SELECT name, age, age * age AS age_squared FROM people ORDER BY age;",
+        "",
+      ].join("\n"),
+      token: /(--.*$|\/\*[\s\S]*?\*\/)|('(?:''|[^'])*'|"(?:""|[^"])*"|`[^`]*`)|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)\b/gm,
+      kw: words("SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE DROP ALTER ADD COLUMN RENAME TO INDEX VIEW TRIGGER AS AND OR NOT NULL IS IN LIKE GLOB BETWEEN EXISTS CASE WHEN THEN ELSE END ORDER BY GROUP HAVING LIMIT OFFSET JOIN INNER LEFT RIGHT OUTER CROSS ON USING UNION ALL INTERSECT EXCEPT DISTINCT PRIMARY KEY FOREIGN REFERENCES DEFAULT UNIQUE CHECK CONSTRAINT AUTOINCREMENT IF BEGIN COMMIT ROLLBACK TRANSACTION WITH RECURSIVE ASC DESC CAST COLLATE REPLACE PRAGMA EXPLAIN VACUUM TRUE FALSE RETURNING OVER PARTITION"),
+      bi: words("INTEGER INT TEXT REAL BLOB NUMERIC VARCHAR CHAR BOOLEAN DATE DATETIME FLOAT DOUBLE COUNT SUM AVG MIN MAX ABS ROUND LENGTH UPPER LOWER SUBSTR TRIM LTRIM RTRIM COALESCE IFNULL NULLIF RANDOM TYPEOF TIME STRFTIME JULIANDAY INSTR PRINTF GROUP_CONCAT INPUT ROW_NUMBER RANK"),
+    },
+    lua: {
+      name: "Lua", exts: ["lua"], worker: "w-lua", mime: "text/x-lua",
+      probe: LUA_BASE + "glue.wasm",
+      extra: () => "const BASE = " + JSON.stringify(LUA_BASE) + ";\nconst PRELUDE = " + JSON.stringify($("lua-prelude").textContent) + ";\n",
+      sample: [
+        'io.write("Your name? ")',
+        "local name = io.read()",
+        'print("Hello, " .. name .. "!")',
+        "",
+        "for i = 1, 5 do",
+        '  print(i, "squared is", i * i)',
+        "end",
+        "",
+      ].join("\n"),
+      token: /(--\[=*\[[\s\S]*?\]=*\]|--.*$)|(\[\[[\s\S]*?\]\]|\[=\[[\s\S]*?\]=\]|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(0[xX][\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b|\b([A-Za-z_]\w*)\b/gm,
+      kw: words("and break do else elseif end false for function goto if in local nil not or repeat return then true until while"),
+      bi: words("print io os string table math tostring tonumber type pairs ipairs next select error assert pcall xpcall require setmetatable getmetatable rawget rawset rawequal rawlen unpack coroutine utf8 load dofile"),
+    },
+  };
+  const EXT = Object.create(null);
+  for (const k in LANGS) for (const e of LANGS[k].exts) EXT[e] = k;
+  const EXT_LIST = Object.keys(EXT).map((e) => "." + e).join(", ");
+  function langOf(name) {
+    const m = /\.([^.]+)$/.exec(name);
+    return (m && EXT[m[1].toLowerCase()]) || null;
+  }
+  function defaultFor(name) {
+    const k = langOf(name);
+    return k ? LANGS[k].sample : DEFAULT_CODE;
+  }
 
-  function highlight(src) {
+  /* ---------- editor: highlight + line numbers ---------- */
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  function highlight(src, L) {
+    if (!L) return esc(src) + "\n";
     let out = "", last = 0, m;
-    TOKEN.lastIndex = 0;
-    while ((m = TOKEN.exec(src))) {
+    const re = L.token;
+    re.lastIndex = 0;
+    while ((m = re.exec(src))) {
       out += esc(src.slice(last, m.index));
-      const t = m[0];
+      const t = m[0], w = L.ci ? t.toUpperCase() : t;
       if (m[1]) out += '<span class="c">' + esc(t) + "</span>";
       else if (m[2]) out += '<span class="s">' + esc(t) + "</span>";
       else if (m[3]) out += '<span class="n">' + t + "</span>";
-      else if (KW.has(t)) out += '<span class="k">' + t + "</span>";
-      else if (BI.has(t)) out += '<span class="b">' + t + "</span>";
+      else if (L.kw.has(w)) out += '<span class="k">' + t + "</span>";
+      else if (L.bi.has(w)) out += '<span class="b">' + t + "</span>";
       else out += t;
       last = m.index + t.length;
     }
@@ -197,7 +553,8 @@ for i in range(1, 6):
 
   function refresh() {
     const v = codeEl.value;
-    hlEl.innerHTML = highlight(v);
+    const k = langOf(files[active].name);
+    hlEl.innerHTML = highlight(v, k && LANGS[k]);
     const n = v.split("\n").length;
     let nums = "";
     for (let i = 1; i <= n; i++) nums += i + "\n";
@@ -209,12 +566,44 @@ for i in range(1, 6):
     gutEl.scrollTop = codeEl.scrollTop;
   }
 
-  try { codeEl.value = localStorage.getItem(KEY) || DEFAULT_CODE; } catch { codeEl.value = DEFAULT_CODE; }
+  const FKEY = "pyro-files";
+  let files = [{ name: "main.py", code: DEFAULT_CODE }], active = 0;
+  try {
+    const s = JSON.parse(localStorage.getItem(FKEY) || "null");
+    if (s && Array.isArray(s.files) && s.files.length) {
+      files = s.files.map((f) => ({ name: String(f.name || "main.py"), code: String(f.code || "") }));
+      active = Math.min(Math.max(0, s.active | 0), files.length - 1);
+    } else {
+      files[0].code = localStorage.getItem(KEY) || DEFAULT_CODE;
+      files[0].name = localStorage.getItem("pyro-name") || "main.py";
+    }
+  } catch {}
+  codeEl.value = files[active].code;
+  function saveFiles() { try { localStorage.setItem(FKEY, JSON.stringify({ files, active })); } catch {} }
   codeEl.addEventListener("input", () => {
     refresh();
-    try { localStorage.setItem(KEY, codeEl.value); } catch {}
+    files[active].code = codeEl.value;
+    saveFiles();
   });
   codeEl.addEventListener("scroll", sync);
+
+  /* ---------- stopper: typing stops at the right edge ---------- */
+  const meter = document.createElement("canvas").getContext("2d");
+  function maxCols() {
+    meter.font = getComputedStyle(codeEl).font;
+    const w = meter.measureText("0").width || 9;
+    return Math.max(1, Math.floor((codeEl.clientWidth - 28) / w) - 1);
+  }
+  function lineLenAfter(add) {
+    const v = codeEl.value, s = codeEl.selectionStart, e = codeEl.selectionEnd;
+    const ls = v.lastIndexOf("\n", s - 1) + 1;
+    let le = v.indexOf("\n", e);
+    if (le < 0) le = v.length;
+    return (s - ls) + (le - e) + add;
+  }
+  codeEl.addEventListener("beforeinput", (e) => {
+    if (e.inputType === "insertText" && e.data && lineLenAfter(e.data.length) > maxCols()) e.preventDefault();
+  });
   refresh();
 
   /* ---------- layout: rotate + resize ---------- */
@@ -228,12 +617,33 @@ for i in range(1, 6):
   } catch {}
 
   const isHoriz = () => layout === "right" || layout === "left";
+  // Narrowest the editor may get: wide enough to show the longest line.
+  function neededEditor() {
+    meter.font = getComputedStyle(codeEl).font;
+    const w = meter.measureText("0").width || 9;
+    let longest = 0;
+    for (const ln of codeEl.value.split("\n")) longest = Math.max(longest, ln.replace(/\t/g, "    ").length);
+    return gutEl.offsetWidth + 28 + Math.ceil((longest + 1) * w) + 17;
+  }
+  // Shortest the editor may get: tall enough to show every line.
+  function neededEditorH() {
+    const lh = parseFloat(getComputedStyle(codeEl).lineHeight) || 23.2;
+    const lines = codeEl.value.split("\n").length;
+    return document.querySelector("#editorSec .tab").offsetHeight + 28 + Math.ceil(lines * lh) + 2;
+  }
+  // Largest share of the space the output panel may take.
+  function maxFrac(total) {
+    const need = isHoriz() ? neededEditor() : neededEditorH();
+    const room = (total - need) / total;
+    if (room < 0.15) return 0.85; // not enough space for both: move freely
+    return Math.min(0.85, room);
+  }
   function applyLayout() {
     mainEl.dataset.layout = layout;
     $("rotate").textContent = "Output: " + LABEL[layout];
     const r = mainEl.getBoundingClientRect();
     const total = (isHoriz() ? r.width : r.height) - 7;
-    outSec.style.flex = "0 0 " + Math.round(frac * total) + "px";
+    outSec.style.flex = "0 0 " + Math.round(Math.min(frac, maxFrac(total)) * total) + "px";
     try { localStorage.setItem(LKEY, JSON.stringify({ layout, frac })); } catch {}
   }
   $("rotate").addEventListener("click", () => {
@@ -241,6 +651,7 @@ for i in range(1, 6):
     applyLayout();
   });
   window.addEventListener("resize", applyLayout);
+  codeEl.addEventListener("input", applyLayout);
 
   resizer.addEventListener("pointerdown", (e) => {
     resizer.setPointerCapture(e.pointerId);
@@ -256,7 +667,7 @@ for i in range(1, 6):
     else if (layout === "bottom") { size = r.bottom - e.clientY; total = r.height; }
     else                          { size = e.clientY - r.top;    total = r.height; }
     total -= 7;
-    frac = Math.min(0.85, Math.max(0.15, size / total));
+    frac = Math.min(maxFrac(total), Math.max(0.15, size / total));
     applyLayout();
   });
   const endDrag = (e) => {
@@ -268,12 +679,134 @@ for i in range(1, 6):
   resizer.addEventListener("pointercancel", endDrag);
   applyLayout();
 
+  /* ---------- tabs ---------- */
+  const tabsEl = $("tabs");
+  const MAX_TABS = 12;
+  let renaming = false;
+  function splitExt(n) {
+    const i = n.lastIndexOf(".");
+    return i > 0 ? [n.slice(0, i), n.slice(i)] : [n, ""];
+  }
+  // The extension is whatever the user types: it picks the language. No extension typed = keep the old one.
+  function cleanName(s, old) {
+    s = s.replace(/[\\/:*?"<>|\x00-\x1f]/g, "").trim().replace(/\s+/g, "_");
+    if (!s) return null;
+    const e = splitExt(old)[1];
+    if (!s.includes(".") && e) s = s.slice(0, 60 - e.length) + e;
+    return s.slice(0, 60);
+  }
+  function uniqueName(name, skip) {
+    const taken = new Set(files.map((f, i) => (i === skip ? "" : f.name.toLowerCase())));
+    if (!taken.has(name.toLowerCase())) return name;
+    const [base, ext] = splitExt(name);
+    let n = 2;
+    while (taken.has((base + "_" + n + ext).toLowerCase())) n++;
+    return base + "_" + n + ext;
+  }
+  function switchTo(i) {
+    active = i;
+    codeEl.value = files[i].code;
+    codeEl.scrollTop = 0;
+    codeEl.scrollLeft = 0;
+    refresh();
+    applyLayout();
+    renderTabs();
+    saveFiles();
+    syncLang();
+  }
+  function addTab() {
+    if (files.length >= MAX_TABS) return;
+    const k = curKey();
+    files.push({ name: uniqueName("untitled." + (k ? LANGS[k].exts[0] : "py"), -1), code: "" });
+    switchTo(files.length - 1);
+    codeEl.focus();
+  }
+  function closeTab(i) {
+    if (files.length < 2) return;
+    if (!confirm('Close "' + files[i].name + '"? Its code will be deleted.')) return;
+    files.splice(i, 1);
+    if (i < active) active -= 1;
+    active = Math.min(active, files.length - 1);
+    switchTo(active);
+  }
+  function startRename(i, label) {
+    renaming = true;
+    const inp = document.createElement("input");
+    inp.id = "fnameInput";
+    inp.value = files[i].name;
+    inp.maxLength = 60;
+    inp.setAttribute("aria-label", "File name");
+    label.replaceWith(inp);
+    inp.focus();
+    inp.select();
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      renaming = false;
+      if (save) {
+        const n = cleanName(inp.value, files[i].name);
+        if (n) { files[i].name = uniqueName(n, i); saveFiles(); }
+      }
+      label.textContent = files[i].name;
+      inp.replaceWith(label);
+      if (save) { refresh(); syncLang(); }
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") finish(false);
+    });
+    inp.addEventListener("blur", () => finish(true));
+  }
+  function renderTabs() {
+    tabsEl.textContent = "";
+    files.forEach((f, i) => {
+      const t = document.createElement("div");
+      t.className = "ftab" + (i === active ? " active" : "");
+      t.setAttribute("role", "tab");
+      t.tabIndex = 0;
+      const label = document.createElement("span");
+      label.textContent = f.name;
+      label.title = i === active ? "Click to rename" : f.name;
+      t.appendChild(label);
+      if (files.length > 1) {
+        const x = document.createElement("button");
+        x.className = "x";
+        x.textContent = "\u00d7";
+        x.title = "Close";
+        x.setAttribute("aria-label", "Close " + f.name);
+        x.addEventListener("click", (e) => { e.stopPropagation(); closeTab(i); });
+        t.appendChild(x);
+      }
+      const activate = () => {
+        if (renaming) return;
+        if (i === active) startRename(i, label); else switchTo(i);
+      };
+      t.addEventListener("click", activate);
+      t.addEventListener("keydown", (e) => {
+        if (e.target === t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); activate(); }
+      });
+      tabsEl.appendChild(t);
+    });
+    const plus = document.createElement("button");
+    plus.id = "newTab";
+    plus.textContent = "+";
+    plus.title = "New file";
+    plus.setAttribute("aria-label", "New file");
+    plus.disabled = files.length >= MAX_TABS;
+    plus.addEventListener("click", addTab);
+    tabsEl.appendChild(plus);
+    const act = tabsEl.querySelector(".ftab.active");
+    if (act) act.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  renderTabs();
+
   /* ---------- download ---------- */
   $("download").addEventListener("click", () => {
-    const blob = new Blob([codeEl.value], { type: "text/x-python" });
+    const blob = new Blob([codeEl.value], { type: (curKey() && LANGS[curKey()].mime) || "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "main.py";
+    a.download = files[active].name;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -289,34 +822,63 @@ for i in range(1, 6):
     outEl.scrollTop = outEl.scrollHeight;
   }
 
-  let worker, i32, bytes;
   let offlineReady = false;
+  const rt = {};          // one runtime per language: { worker, i32, bytes, state, label }
+  const offline = {};     // per language: cached for offline use?
+  let running = null;     // language key that is running right now
   function hideInput() { inputRow.classList.remove("show"); inputEl.value = ""; }
+  function curKey() { return langOf(files[active].name); }
 
-  function start() {
-    if (!crossOriginIsolated) {
-      statusEl.textContent = "Missing vercel.json headers. Upload vercel.json and redeploy.";
-      return;
-    }
-    if (worker) worker.terminate();
-    const sab = new SharedArrayBuffer(8 + 65536);
-    i32 = new Int32Array(sab);
-    bytes = new Uint8Array(sab, 8);
-    const url = URL.createObjectURL(new Blob([$("worker-src").textContent], { type: "text/javascript" }));
-    worker = new Worker(url);
-    worker.onmessage = onMsg;
-    worker.postMessage({ type: "init", sab });
-    statusEl.textContent = "Loading Python...";
-    runBtn.disabled = true; stopBtn.disabled = true; hideInput();
+  function workerSource(key) {
+    const L = LANGS[key];
+    return $("w-common").textContent + (L.extra ? L.extra() : "") + $(L.worker).textContent;
   }
 
-  function onMsg(ev) {
-    const m = ev.data;
+  function updateUI() {
+    const k = curKey(), r = k && rt[k];
+    const nm = k ? LANGS[k].name : "Code";
+    codeEl.setAttribute("aria-label", nm + " code (Ctrl+Enter to run)");
+    inputEl.setAttribute("aria-label", (running ? LANGS[running].name : nm) + " input");
+    runBtn.disabled = !!running || !r || r.state !== "ready";
+    stopBtn.disabled = !running;
+    let t;
+    if (!crossOriginIsolated) t = "Missing vercel.json headers. Upload vercel.json and redeploy.";
+    else if (!k) t = "Unknown file type. Rename it to " + EXT_LIST + ".";
+    else if (!r || r.state === "loading") t = "Loading " + nm + "...";
+    else if (r.state === "fail") t = "Failed to load " + nm + ". Check your connection and reload.";
+    else t = r.label + (offline[k] ? " \u00b7 offline ready" : "");
+    statusEl.textContent = t;
+  }
+
+  function startRt(key) {
+    if (!crossOriginIsolated) { updateUI(); return; }
+    const r = rt[key] || (rt[key] = {});
+    if (r.worker) r.worker.terminate();
+    const sab = new SharedArrayBuffer(8 + 65536);
+    r.i32 = new Int32Array(sab);
+    r.bytes = new Uint8Array(sab, 8);
+    const url = URL.createObjectURL(new Blob([workerSource(key)], { type: "text/javascript" }));
+    r.worker = new Worker(url);
+    r.worker.onmessage = (ev) => onMsg(key, ev);
+    r.worker.postMessage({ type: "init", sab });
+    r.state = "loading"; r.label = "";
+    updateUI();
+  }
+  // Load the runtime for the open file's language (once; retried if it failed).
+  function syncLang() {
+    const k = curKey();
+    if (k && (!rt[k] || rt[k].state === "fail")) startRt(k);
+    updateUI();
+  }
+
+  function onMsg(key, ev) {
+    const m = ev.data, r = rt[key];
     if (m.type === "ready") {
-      statusEl.textContent = "Python " + m.version + (offlineReady ? " \u00b7 offline ready" : "");
-      runBtn.disabled = false;
+      r.state = "ready"; r.label = m.version;
+      updateUI();
     } else if (m.type === "fail") {
-      statusEl.textContent = "Failed to load Python. Check your connection and reload.";
+      r.state = "fail";
+      updateUI();
     } else if (m.type === "out") {
       write(m.text, m.err ? "err" : "");
     } else if (m.type === "input") {
@@ -324,56 +886,69 @@ for i in range(1, 6):
       inputEl.focus();
     } else if (m.type === "done") {
       write("--- finished ---\n", "info");
-      runBtn.disabled = false; stopBtn.disabled = true; hideInput();
+      running = null; hideInput(); updateUI();
     }
   }
 
   function run() {
     if (runBtn.disabled) return;
-    runBtn.disabled = true; stopBtn.disabled = false;
+    const k = curKey();
+    running = k;
     outEl.textContent = "";
-    worker.postMessage({ type: "run", code: codeEl.value });
+    updateUI();
+    rt[k].worker.postMessage({ type: "run", code: codeEl.value });
   }
 
   function send() {
+    const r = rt[running];
+    if (!r) return;
     const enc = new TextEncoder().encode(inputEl.value).slice(0, 65536);
     write(inputEl.value + "\n", "info");
-    bytes.set(enc);
-    i32[1] = enc.length;
-    Atomics.store(i32, 0, 1);
-    Atomics.notify(i32, 0);
+    r.bytes.set(enc);
+    r.i32[1] = enc.length;
+    Atomics.store(r.i32, 0, 1);
+    Atomics.notify(r.i32, 0);
     hideInput();
   }
 
   runBtn.addEventListener("click", run);
-  stopBtn.addEventListener("click", () => { write("--- stopped ---\n", "info"); start(); });
+  stopBtn.addEventListener("click", () => {
+    if (!running) return;
+    const k = running;
+    running = null;
+    write("--- stopped ---\n", "info");
+    hideInput();
+    startRt(k);
+  });
   $("send").addEventListener("click", send);
   inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
   $("clear").addEventListener("click", () => { outEl.textContent = ""; });
   $("reset").addEventListener("click", () => {
-    codeEl.value = DEFAULT_CODE; refresh();
-    try { localStorage.setItem(KEY, DEFAULT_CODE); } catch {}
+    const code = defaultFor(files[active].name);
+    codeEl.value = code; refresh(); applyLayout();
+    files[active].code = code; saveFiles();
   });
 
   codeEl.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); return; }
     if (e.key === "Tab") {
       e.preventDefault();
+      if (lineLenAfter(4) > maxCols()) return;
       codeEl.setRangeText("    ", codeEl.selectionStart, codeEl.selectionEnd, "end");
       codeEl.dispatchEvent(new Event("input"));
     }
   });
 
-  start();
+  syncLang();
 
   /* ---------- offline support ---------- */
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js")
       .then(() => navigator.serviceWorker.ready)
       .then(async () => {
-        offlineReady = !!(await caches.match("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.asm.wasm"));
-        const t = statusEl.textContent;
-        if (offlineReady && t.startsWith("Python ") && !t.includes("offline")) statusEl.textContent = t + " \u00b7 offline ready";
+        for (const k of Object.keys(LANGS)) offline[k] = !!(await caches.match(LANGS[k].probe));
+        offlineReady = true;
+        updateUI();
       })
       .catch(() => {});
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
