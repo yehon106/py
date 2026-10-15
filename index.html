@@ -66,8 +66,14 @@
   .editor { flex: 1; min-height: 0; display: flex; background: var(--edit); }
   #gutter { width: 52px; padding: 14px 10px 14px 0; text-align: right; color: #566074; overflow: hidden; user-select: none; white-space: pre; border-right: 1px solid var(--line); }
   .codewrap { position: relative; flex: 1; min-width: 0; }
-  #hl, #code { position: absolute; inset: 0; margin: 0; padding: 14px 14px 40px 14px; white-space: pre; border: 0; }
+  #hl, #mk, #code { position: absolute; inset: 0; margin: 0; padding: 14px 14px 40px 14px; white-space: pre; border: 0; }
   #hl { overflow: hidden; pointer-events: none; color: var(--ink); }
+  #mk { overflow: hidden; pointer-events: none; color: transparent; }
+  #mk .bad { text-decoration: underline wavy var(--err); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  #gutter .gbad { color: var(--err); }
+  #gutter .gbad::before { content: "\25CF "; font-size: 10px; vertical-align: 1px; }
+  #probBar { flex: 0 0 auto; display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 6px 14px; font-size: 12.5px; font-weight: 500; color: var(--err); background: var(--bar); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #probBar[hidden] { display: none; }
   #code { background: transparent; color: transparent; caret-color: var(--ink); resize: none; overflow-x: hidden; overflow-y: auto; width: 100%; height: 100%; }
   #code::selection { background: #2f4a6b; color: transparent; }
   #hl .k { color: var(--k); } #hl .b { color: var(--b); } #hl .s { color: var(--s); }
@@ -104,6 +110,7 @@
 <div id="setPanel" role="group" aria-label="Editor settings" hidden>
   <label title="Typing ( [ { or a quote adds the closing one"><input type="checkbox" data-set="autoClose"> Auto-close brackets and quotes</label>
   <label title="Enter between foo( and our ) removes the ) instead of pushing it down. Shift+Enter keeps it."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
+  <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
   <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
 </div>
 <main id="main" data-layout="right">
@@ -113,9 +120,11 @@
       <div id="gutter" class="mono" aria-hidden="true"></div>
       <div class="codewrap">
         <pre id="hl" class="mono" aria-hidden="true"></pre>
+        <pre id="mk" class="mono" aria-hidden="true"></pre>
         <textarea id="code" class="mono" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Code (Ctrl+Enter to run)"></textarea>
       </div>
     </div>
+    <button id="probBar" hidden title="Click to jump to the problem"></button>
   </section>
   <div id="resizer" role="separator" aria-label="Drag to resize"></div>
   <section id="outSec">
@@ -1675,6 +1684,52 @@ for i in range(1, 6):
     return out + esc(src.slice(last)) + "\n";
   }
 
+  /* ---------- red markers, layer 1: brackets and strings ---------- */
+  const mkEl = $("mk"), barEl = $("probBar");
+  let marksOn = true, problems = [], marksTimer = 0, barIdx = 0;
+  function queueMarks(v) {            // any edit clears the markers at once; they come back when you pause
+    clearTimeout(marksTimer);
+    problems = [];
+    mkEl.textContent = v + "\n";
+    barEl.hidden = true;
+    if (marksOn) marksTimer = setTimeout(computeMarks, 300);
+  }
+  function computeMarks() {
+    const v = codeEl.value, k = langOf(files[active].name), L = k && LANGS[k];
+    problems = L && marksOn ? EDIT.check(v, { key: k, token: L.token }) : [];
+    barIdx = 0;
+    if (!problems.length) return;
+    let html = "", last = 0;
+    for (const q of problems) {
+      if (q.s < last) continue;
+      html += esc(v.slice(last, q.s)) + '<span class="bad">' + esc(v.slice(q.s, q.e)) + "</span>";
+      last = q.e;
+    }
+    mkEl.innerHTML = html + esc(v.slice(last)) + "\n";
+    const bad = new Set(problems.map((q) => q.line));
+    let nums = "";
+    for (let i = 1, n = v.split("\n").length; i <= n; i++) nums += (bad.has(i) ? '<span class="gbad">' + i + "</span>" : i) + "\n";
+    gutEl.innerHTML = nums;
+    showBar();
+    sync();
+  }
+  function showBar() {
+    const q = problems[barIdx % problems.length];
+    barEl.textContent = "Line " + q.line + ": " + q.msg + (problems.length > 1 ? "   (" + (barIdx % problems.length + 1) + " of " + problems.length + ", click for next)" : "");
+    barEl.hidden = false;
+  }
+  barEl.addEventListener("click", () => {
+    if (!problems.length) return;
+    const q = problems[barIdx % problems.length];
+    codeEl.focus();
+    codeEl.setSelectionRange(q.s, q.e);
+    const lh = parseFloat(getComputedStyle(codeEl).lineHeight) || 23.2;
+    codeEl.scrollTop = Math.max(0, (q.line - 1) * lh - codeEl.clientHeight / 3);
+    sync();
+    barIdx++;
+    showBar();
+  });
+
   function refresh() {
     const v = codeEl.value;
     const k = langOf(files[active].name);
@@ -1683,11 +1738,13 @@ for i in range(1, 6):
     let nums = "";
     for (let i = 1; i <= n; i++) nums += i + "\n";
     gutEl.textContent = nums;
+    queueMarks(v);
     sync();
   }
   function sync() {
     hlEl.scrollTop = codeEl.scrollTop; hlEl.scrollLeft = codeEl.scrollLeft;
     gutEl.scrollTop = codeEl.scrollTop;
+    mkEl.scrollTop = codeEl.scrollTop; mkEl.scrollLeft = codeEl.scrollLeft;
   }
 
   const FKEY = "pyro-files";
@@ -1948,7 +2005,31 @@ for i in range(1, 6):
       return null;
     }
 
-    return { handle, shiftOurs, shiftOursByDiff, ctxAt, INDENT };
+    // Layer 1 problems: unmatched or mismatched ( ) [ ] { } and unclosed strings. Brackets inside strings and comments are ignored.
+    function check(text, lang) {
+      const out = [];
+      if (!lang || !lang.token) return out;
+      const toks = tokens(text, lang), stack = [];
+      const lineOf = (p) => { let n = 1; for (let i = text.indexOf("\n"); i >= 0 && i < p; i = text.indexOf("\n", i + 1)) n++; return n; };
+      let ti = 0;
+      for (let i = 0; i < text.length; i++) {
+        while (ti < toks.length && toks[ti].e <= i) ti++;
+        if (ti < toks.length && toks[ti].s <= i) { i = toks[ti].e - 1; continue; }
+        const c = text[i];
+        if (OPEN[c]) stack.push(i);
+        else if (CLOSE[c]) {
+          if (!stack.length) out.push({ s: i, e: i + 1, msg: "`" + c + "` has no matching `" + CLOSE[c] + "`" });
+          else if (text[stack[stack.length - 1]] !== CLOSE[c]) { const o = stack.pop(); out.push({ s: i, e: i + 1, msg: "`" + c + "` does not match `" + text[o] + "` on line " + lineOf(o) }); }
+          else stack.pop();
+        } else if (quoteOk(c, lang) && !(i > 0 && WORD.test(text[i - 1]))) {
+          out.push({ s: i, e: Math.max(i + 1, lineEnd(text, i)), msg: "string is not closed" });
+        }
+      }
+      for (const o of stack) out.push({ s: o, e: o + 1, msg: "`" + text[o] + "` is never closed" });
+      return out.sort((a, b) => a.s - b.s).slice(0, 50).map((q) => ({ s: q.s, e: q.e, line: lineOf(q.s), msg: q.msg }));
+    }
+
+    return { handle, shiftOurs, shiftOursByDiff, ctxAt, check, INDENT };
   })();
   /* ===== END EDIT ENGINE ===== */
 
@@ -2521,6 +2602,7 @@ for i in range(1, 6):
     const s = JSON.parse(localStorage.getItem(SKEY) || "null");
     if (s) for (const k in settings) if (typeof s[k] === "boolean") settings[k] = s[k];
   } catch {}
+  marksOn = settings.markers;
   let ours = [], lastText = codeEl.value, engineBusy = false;
   // Edits we did not make (mouse, paste, undo...): keep the list of our closers in step.
   codeEl.addEventListener("input", () => {
@@ -2581,6 +2663,7 @@ for i in range(1, 6):
     cb.checked = !!settings[cb.dataset.set];
     cb.addEventListener("change", () => {
       settings[cb.dataset.set] = cb.checked;
+      if (cb.dataset.set === "markers") { marksOn = cb.checked; queueMarks(codeEl.value); }
       try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch {}
     });
   });
