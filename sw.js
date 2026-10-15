@@ -27,7 +27,7 @@ const CORE = [
   "pyodide-lock.json",
 ].map((f) => PYO_BASE + f);
 
-const OPTIONAL = ["/index.html", "/manifest.json", "/jscpp.js", "/icon-192.png", "/icon-512.png"];
+const OPTIONAL = ["/index.html", "/manifest.json", "/jscpp.js", "/ts.js", "/scheme.js", "/prolog.js", "/icon-192.png", "/icon-512.png"];
 
 // Re-wrap a response with the headers that keep the page cross-origin isolated.
 function isolate(res) {
