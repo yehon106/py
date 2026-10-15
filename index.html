@@ -72,6 +72,11 @@
   #code::selection { background: #2f4a6b; color: transparent; }
   #hl .k { color: var(--k); } #hl .b { color: var(--b); } #hl .s { color: var(--s); }
   #hl .n { color: var(--n); } #hl .c { color: var(--c); font-style: italic; }
+  #gear { padding: 7px 10px; line-height: 1; }
+  #setPanel { position: fixed; z-index: 20; background: var(--bar); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #setPanel[hidden] { display: none; }
+  #setPanel label { display: flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+  #setPanel input { accent-color: var(--accent); }
   #stdinBox { display: none; width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 13px; padding: 6px 10px; color: var(--ink); background: var(--edit); border: 0; border-bottom: 1px solid var(--line); outline: none; }
   #gfxWrap { display: none; flex: 0 0 auto; max-height: 75%; overflow: auto; background: #000; border-bottom: 1px solid var(--line); }
   #gfx { display: block; max-width: 100%; height: auto; margin: 0 auto; outline: none; background: #000; }
@@ -93,8 +98,14 @@
   <button id="download">Download</button>
   <button id="rotate" title="Move the output panel">Output: Right</button>
   <button id="reset">Reset</button>
+  <button id="gear" title="Editor settings" aria-label="Editor settings" aria-haspopup="true" aria-expanded="false" aria-controls="setPanel">&#9881;&#xFE0E;</button>
   <span id="status">Loading Cronoff...</span>
 </header>
+<div id="setPanel" role="group" aria-label="Editor settings" hidden>
+  <label title="Typing ( [ { or a quote adds the closing one"><input type="checkbox" data-set="autoClose"> Auto-close brackets and quotes</label>
+  <label title="Enter between foo( and our ) removes the ) instead of pushing it down. Shift+Enter keeps it."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
+  <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
+</div>
 <main id="main" data-layout="right">
   <section id="editorSec">
     <div class="tab" id="tabs" role="tablist"></div>
@@ -1700,6 +1711,247 @@ for i in range(1, 6):
   });
   codeEl.addEventListener("scroll", sync);
 
+  /* ===== EDIT ENGINE (pure: no page code inside, tested in Node) ===== */
+  // handle(text, [selStart, selEnd], {key, shift}, settings, ours, lang) -> null | {text, selection, ours, edit}
+  //   null = the engine does not handle this key, let the browser do its normal thing.
+  //   edit = {from, to, ins} is the one replacement that turns the old text into the new text (null = caret move only).
+  //   ours = positions of the closing characters that Cronoff added (and nobody has typed over yet).
+  //   lang = {key, token} or null. token is the syntax-color regex: group 1 = comment, group 2 = string.
+  const EDIT = (() => {
+    const OPEN = { "(": ")", "[": "]", "{": "}" };
+    const CLOSE = { ")": "(", "]": "[", "}": "{" };
+    const INDENT = "    ";
+    const WORD = /[\p{L}\p{N}_]/u;
+    const NEXT_OK = /[\s)\]};:,.]/;       // auto-close only when the next character is one of these (or the end)
+    const BLOCK_END = /(\*\/|\|#|\]=*\]|^=end)$/;
+    const NO_SQUOTE = new Set(["scm", "rs"]);                 // ' is not a string quote here (Scheme quote, Rust lifetimes)
+    const BACKTICK = new Set(["js", "ts", "sql", "go"]);      // languages where ` pairs
+    const PY_PREFIX = /^(r|u|b|f|br|rb|fr|rf)$/i;
+
+    const quoteOk = (ch, lang) => {
+      if (ch === '"') return true;
+      if (ch === "'") return !(lang && NO_SQUOTE.has(lang.key));
+      if (ch === "`") return !!(lang && BACKTICK.has(lang.key));
+      return false;
+    };
+    const lineStart = (t, p) => t.lastIndexOf("\n", p - 1) + 1;
+    const lineEnd = (t, p) => { const i = t.indexOf("\n", p); return i < 0 ? t.length : i; };
+
+    function tokens(text, lang) {
+      const out = [];
+      if (!lang || !lang.token) return out;
+      const re = new RegExp(lang.token.source, lang.token.flags.indexOf("g") < 0 ? lang.token.flags + "g" : lang.token.flags);
+      let m;
+      while ((m = re.exec(text))) {
+        if (m[0] === "") { re.lastIndex++; continue; }
+        if (m[1]) out.push({ s: m.index, e: m.index + m[0].length, t: "comment", x: m[0] });
+        else if (m[2]) out.push({ s: m.index, e: m.index + m[0].length, t: "string", x: m[0] });
+      }
+      return out;
+    }
+    // What is around the caret: "code", "string" or "comment".
+    function ctxAt(text, pos, lang) {
+      for (const k of tokens(text, lang)) {
+        if (k.s < pos && pos < k.e) return k.t;
+        if (k.t === "comment" && pos === k.e && !BLOCK_END.test(k.x) && (pos >= text.length || text[pos] === "\n")) return k.t;
+      }
+      return "code";
+    }
+    // What a single character belongs to.
+    function kindOfChar(text, i, lang) {
+      for (const k of tokens(text, lang)) if (k.s <= i && i < k.e) return k.t;
+      return "code";
+    }
+    const cleanOurs = (text, ours) => {
+      const seen = new Set();
+      for (const q of ours || []) if (q >= 0 && q < text.length && /[)\]}"'`]/.test(text[q])) seen.add(q);
+      return [...seen].sort((a, b) => a - b);
+    };
+    // Shift the list after the text between from..to was replaced by insLen characters.
+    function shiftOurs(ours, from, to, insLen) {
+      const d = insLen - (to - from), out = [];
+      for (const q of ours) { if (q < from) out.push(q); else if (q >= to) out.push(q + d); }
+      return out;
+    }
+    // Same, for an edit we did not make ourselves (mouse, paste, undo...): work out what changed. caret = caret after the edit.
+    function shiftOursByDiff(oldT, newT, ours, caret) {
+      const ol = oldT.length, nl = newT.length;
+      let from, to, ins;
+      const suf = nl - caret;
+      if (caret >= 0 && caret <= nl && suf <= ol && newT.slice(caret) === oldT.slice(ol - suf)) {
+        let p = 0; const lim = Math.min(caret, ol - suf);
+        while (p < lim && oldT[p] === newT[p]) p++;
+        from = p; to = ol - suf; ins = caret - p;
+      } else {
+        let p = 0;
+        while (p < ol && p < nl && oldT[p] === newT[p]) p++;
+        let b = 0;
+        while (b < ol - p && b < nl - p && oldT[ol - 1 - b] === newT[nl - 1 - b]) b++;
+        from = p; to = ol - b; ins = nl - b - p;
+      }
+      return shiftOurs(ours, from, to, ins);
+    }
+
+    function result(text, from, to, ins, selS, selE, ours, add) {
+      let o = shiftOurs(ours, from, to, ins.length);
+      if (add) o = o.concat(add);
+      o = [...new Set(o)].sort((a, b) => a - b);
+      return { text: text.slice(0, from) + ins + text.slice(to), selection: [selS, selE], ours: o, edit: { from, to, ins } };
+    }
+    const caretOnly = (text, s, e, ours) => ({ text, selection: [s, e], ours, edit: null });
+
+    // Indent for a new line made at position s.
+    function newIndent(text, s, lang) {
+      const ls = lineStart(text, s);
+      const lead = /^[ \t]*/.exec(text.slice(ls, lineEnd(text, ls)))[0];
+      let ind = lead.slice(0, s - ls);
+      let i = s - 1;
+      while (i >= ls && (text[i] === " " || text[i] === "\t")) i--;
+      if (i >= ls) {
+        const c = text[i];
+        if ((OPEN[c] || (c === ":" && lang && lang.key === "py")) && kindOfChar(text, i, lang) === "code") ind += INDENT;
+      }
+      return ind;
+    }
+
+    // Lines touched by a selection (a selection ending at the very start of a line does not touch that line).
+    function lineRegion(text, s, e) {
+      const endPos = e > s && text[e - 1] === "\n" ? e - 1 : e;
+      return { ls: lineStart(text, s), le: lineEnd(text, endPos) };
+    }
+    function blockEdit(text, s, e, ours, shift) {
+      const { ls, le } = lineRegion(text, s, e);
+      const lines = text.slice(ls, le).split("\n");
+      const delta = [];                 // per line: +n added or -n removed
+      const nl = lines.map((l) => {
+        if (!shift) { delta.push(l.length ? INDENT.length : 0); return l.length ? INDENT + l : l; }
+        let n = 0;
+        if (l[0] === "\t") n = 1; else while (n < 4 && l[n] === " ") n++;
+        delta.push(-n);
+        return l.slice(n);
+      });
+      const info = (p) => {             // which line is p on, and at which column
+        let o = ls;
+        for (let i = 0; i < lines.length; i++) { if (p <= o + lines[i].length) return { i, col: p - o }; o += lines[i].length + 1; }
+        return { i: lines.length - 1, col: lines[lines.length - 1].length };
+      };
+      const total = delta.reduce((a, b) => a + b, 0);
+      const mapChar = (q) => {
+        if (q < ls) return q;
+        if (q >= le) return q + total;
+        const { i } = info(q);
+        let add = 0;
+        for (let j = 0; j < i; j++) add += delta[j];
+        return q + add + delta[i];
+      };
+      const ins = nl.join("\n");
+      const caret = (p) => {
+        if (p < ls) return p;
+        if (p > le) return p + total;
+        const { i, col } = info(p);
+        let add = 0;
+        for (let j = 0; j < i; j++) add += delta[j];
+        const lineNew = (() => { let o = ls; for (let j = 0; j < i; j++) o += lines[j].length + 1; return o; })();
+        const base = lineNew + add;       // where this line starts after the edit
+        const d = delta[i];
+        const c2 = d >= 0 ? (col === 0 ? 0 : col + d) : Math.max(0, col + d);
+        return base + c2;
+      };
+      const outOurs = [...new Set(ours.map(mapChar))].sort((a, b) => a - b);
+      return { text: text.slice(0, ls) + ins + text.slice(le), selection: [caret(s), caret(e)], ours: outOurs, edit: ins === text.slice(ls, le) ? null : { from: ls, to: le, ins } };
+    }
+
+    function handle(text, sel, key, settings, oursIn, lang) {
+      const ours = cleanOurs(text, oursIn), has = new Set(ours);
+      const s = Math.min(sel[0], sel[1]), e = Math.max(sel[0], sel[1]), collapsed = s === e;
+      const k = key.key;
+
+      /* ----- typed characters ----- */
+      if (k.length === 1) {
+        const isOpen = !!OPEN[k], isQuote = quoteOk(k, lang);
+        // typing a closer that is already there and ours: type over it (and over our closers in between)
+        if (collapsed && (CLOSE[k] || isQuote || k === '"' || k === "'" || k === "`")) {
+          const run = [];
+          for (let j = s; has.has(j); j++) run.push(j);
+          const hit = run.findIndex((q) => text[q] === k);
+          if (hit >= 0) {
+            const to = run[hit] + 1;
+            return caretOnly(text, to, to, ours.filter((q) => q < s || q >= to));
+          }
+        }
+        if (!settings.autoClose) return null;
+        if (isOpen || isQuote) {
+          const close = isOpen ? OPEN[k] : k;
+          if (!collapsed) {                                   // wrap the selection
+            if (ctxAt(text, s, lang) !== "code" || ctxAt(text, e, lang) !== "code") return null;
+            const o = ours.map((q) => (q < s ? q : q < e ? q + 1 : q + 2));
+            return { text: text.slice(0, s) + k + text.slice(s, e) + close + text.slice(e), selection: [s + 1, e + 1], ours: o, edit: { from: s, to: e, ins: k + text.slice(s, e) + close } };
+          }
+          if (ctxAt(text, s, lang) !== "code") return null;
+          const next = text[s];
+          if (next !== undefined && !NEXT_OK.test(next)) return null;
+          if (isQuote && !isOpen) {
+            const prev = text[s - 1];
+            if (prev === "\\" || prev === k) return null;
+            if (prev && WORD.test(prev)) {
+              const w = /[\p{L}\p{N}_]+$/u.exec(text.slice(0, s))[0];
+              if (!(lang && lang.key === "py" && (k === '"' || k === "'") && PY_PREFIX.test(w))) return null;
+            }
+          }
+          return result(text, s, s, k + close, s + 1, s + 1, ours, [s + 1]);
+        }
+        return null;
+      }
+
+      /* ----- Backspace ----- */
+      if (k === "Backspace") {
+        if (!collapsed || s === 0) return null;
+        if (has.has(s)) {
+          const c = text[s], opener = CLOSE[c] || c;
+          if (text[s - 1] === opener) return result(text, s - 1, s + 1, "", s - 1, s - 1, ours);
+        }
+        if (settings.autoIndent) {
+          const before = text.slice(lineStart(text, s), s);
+          if (before.length > 0 && /^ +$/.test(before)) {
+            const n = ((before.length - 1) % 4) + 1;
+            return result(text, s - n, s, "", s - n, s - n, ours);
+          }
+        }
+        return null;
+      }
+
+      /* ----- Enter / Shift+Enter ----- */
+      if (k === "Enter") {
+        const ind = settings.autoIndent ? newIndent(text, s, lang) : "";
+        const base = settings.autoIndent ? /^[ \t]*/.exec(text.slice(lineStart(text, s), s))[0] : "";
+        if (key.shift) {
+          if (collapsed && OPEN[text[s - 1]] && OPEN[text[s - 1]] === text[s]) {      // foo(|) -> three lines, closer below
+            const inner = base + (settings.autoIndent ? INDENT : "");
+            return result(text, s, s, "\n" + inner + "\n" + base, s + 1 + inner.length, s + 1 + inner.length, ours);
+          }
+          return result(text, s, e, "\n" + ind, s + 1 + ind.length, s + 1 + ind.length, ours);
+        }
+        if (collapsed && settings.enterRemoves && has.has(s)) {                        // foo(|) -> our closers disappear
+          let end = s;
+          while (has.has(end)) end++;
+          return result(text, s, end, "\n" + ind, s + 1 + ind.length, s + 1 + ind.length, ours);
+        }
+        if (!settings.autoIndent) return null;
+        return result(text, s, e, "\n" + ind, s + 1 + ind.length, s + 1 + ind.length, ours);
+      }
+
+      /* ----- Tab / Shift+Tab ----- */
+      if (k === "Tab" && settings.autoIndent) {
+        if (!key.shift && collapsed) return result(text, s, s, INDENT, s + INDENT.length, s + INDENT.length, ours);
+        return blockEdit(text, s, e, ours, !!key.shift);
+      }
+      return null;
+    }
+
+    return { handle, shiftOurs, shiftOursByDiff, ctxAt, INDENT };
+  })();
+  /* ===== END EDIT ENGINE ===== */
+
   /* ---------- stopper: typing stops at the right edge ---------- */
   const meter = document.createElement("canvas").getContext("2d");
   function maxCols() {
@@ -1715,7 +1967,7 @@ for i in range(1, 6):
     return (s - ls) + (le - e) + add;
   }
   codeEl.addEventListener("beforeinput", (e) => {
-    if (e.inputType === "insertText" && e.data && lineLenAfter(e.data.length) > maxCols()) e.preventDefault();
+    if (!engineBusy && e.inputType === "insertText" && e.data && lineLenAfter(e.data.length) > maxCols()) e.preventDefault();
   });
   refresh();
 
@@ -2262,8 +2514,93 @@ for i in range(1, 6):
     files[active].code = code; saveFiles();
   });
 
+  /* ---------- smart editing: wiring for the edit engine ---------- */
+  const SKEY = "pyro-editset";
+  const settings = { autoClose: true, enterRemoves: true, autoIndent: true, markers: true };
+  try {
+    const s = JSON.parse(localStorage.getItem(SKEY) || "null");
+    if (s) for (const k in settings) if (typeof s[k] === "boolean") settings[k] = s[k];
+  } catch {}
+  let ours = [], lastText = codeEl.value, engineBusy = false;
+  // Edits we did not make (mouse, paste, undo...): keep the list of our closers in step.
+  codeEl.addEventListener("input", () => {
+    const v = codeEl.value;
+    if (!engineBusy && v !== lastText) ours = EDIT.shiftOursByDiff(lastText, v, ours, codeEl.selectionStart);
+    lastText = v;
+  });
+  function applyEdit(res) {
+    if (res.edit) {
+      const { from, to, ins } = res.edit;
+      engineBusy = true;
+      codeEl.setSelectionRange(from, to);
+      let ok = false;
+      try { ok = ins === "" ? document.execCommand("delete") : document.execCommand("insertText", false, ins); } catch {}
+      if (!ok || codeEl.value !== res.text) {          // fallback: still correct, but Ctrl+Z may not undo it
+        codeEl.setRangeText(ins, from, to, "end");
+        codeEl.dispatchEvent(new Event("input"));
+      }
+      engineBusy = false;
+    }
+    codeEl.setSelectionRange(res.selection[0], res.selection[1]);
+    ours = res.ours;
+    lastText = codeEl.value;
+  }
+  // true = the engine handled the key
+  function smartKey(e) {
+    if (e.isComposing) return false;
+    const altGr = !!(e.getModifierState && e.getModifierState("AltGraph"));
+    if (e.metaKey || (!altGr && (e.ctrlKey || e.altKey))) return false;
+    const k = e.key;
+    if (!(k.length === 1 || k === "Enter" || k === "Backspace" || k === "Tab")) return false;
+    if (k === "Tab" && !settings.autoIndent) return false;   // old Tab behaviour below
+    if (codeEl.value !== lastText) { ours = []; lastText = codeEl.value; }   // file switched or text replaced by code
+    const lk = langOf(files[active].name), L = lk && LANGS[lk];
+    const res = EDIT.handle(codeEl.value, [codeEl.selectionStart, codeEl.selectionEnd], { key: k, shift: e.shiftKey }, settings, ours, L ? { key: lk, token: L.token } : null);
+    if (!res) return false;
+    // never push a line past the right edge (Enter and Backspace never grow a line)
+    if (res.edit && (k.length === 1 || k === "Tab") && res.text.length > codeEl.value.length) {
+      const { from, ins } = res.edit;
+      let a = res.text.lastIndexOf("\n", from - 1) + 1, worst = 0;
+      const stop = from + ins.length;
+      while (a <= stop) {
+        let b = res.text.indexOf("\n", a);
+        if (b < 0) b = res.text.length;
+        worst = Math.max(worst, b - a);
+        a = b + 1;
+      }
+      if (worst > maxCols()) { if (k.length === 1) return false; e.preventDefault(); return true; }
+    }
+    e.preventDefault();
+    applyEdit(res);
+    return true;
+  }
+
+  /* ---------- settings gear ---------- */
+  const gearBtn = $("gear"), setPanel = $("setPanel");
+  setPanel.querySelectorAll("input[data-set]").forEach((cb) => {
+    cb.checked = !!settings[cb.dataset.set];
+    cb.addEventListener("change", () => {
+      settings[cb.dataset.set] = cb.checked;
+      try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch {}
+    });
+  });
+  function setPanelOpen(open) {
+    setPanel.hidden = !open;
+    gearBtn.setAttribute("aria-expanded", String(open));
+    if (open) {
+      const r = gearBtn.getBoundingClientRect();
+      setPanel.style.top = Math.round(r.bottom + 6) + "px";
+      setPanel.style.left = Math.max(8, Math.min(Math.round(r.left), window.innerWidth - setPanel.offsetWidth - 8)) + "px";
+    }
+  }
+  gearBtn.addEventListener("click", (e) => { e.stopPropagation(); setPanelOpen(setPanel.hidden); });
+  document.addEventListener("click", (e) => { if (!setPanel.hidden && !setPanel.contains(e.target)) setPanelOpen(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !setPanel.hidden) { setPanelOpen(false); gearBtn.focus(); } });
+  window.addEventListener("resize", () => { if (!setPanel.hidden) setPanelOpen(true); });
+
   codeEl.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); return; }
+    if (smartKey(e)) return;
     if (e.key === "Tab") {
       e.preventDefault();
       if (lineLenAfter(4) > maxCols()) return;
