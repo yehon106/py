@@ -72,6 +72,7 @@
   #code::selection { background: #2f4a6b; color: transparent; }
   #hl .k { color: var(--k); } #hl .b { color: var(--b); } #hl .s { color: var(--s); }
   #hl .n { color: var(--n); } #hl .c { color: var(--c); font-style: italic; }
+  #stdinBox { display: none; width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 13px; padding: 6px 10px; color: var(--ink); background: var(--edit); border: 0; border-bottom: 1px solid var(--line); outline: none; }
   #gfxWrap { display: none; flex: 0 0 auto; max-height: 75%; overflow: auto; background: #000; border-bottom: 1px solid var(--line); }
   #gfx { display: block; max-width: 100%; height: auto; margin: 0 auto; outline: none; background: #000; }
   #out { flex: 1; min-width: 0; margin: 0; padding: 14px; background: var(--out); overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
@@ -108,6 +109,7 @@
   <div id="resizer" role="separator" aria-label="Drag to resize"></div>
   <section id="outSec">
     <div class="tab"><b>Output</b><button id="clear">Clear</button></div>
+    <textarea id="stdinBox" rows="2" placeholder="Program input for this language (one line per input). It is sent when you press Run." aria-label="Program input"></textarea>
     <div id="gfxWrap"><canvas id="gfx" width="640" height="480" tabindex="0" aria-label="Graphics window"></canvas></div>
     <pre id="out" class="mono" aria-live="polite"></pre>
     <div id="inputRow" class="mono">
@@ -119,6 +121,10 @@
 </main>
 
 <script id="w-common" type="text/plain">
+// Make sure every console method exists (some browsers or extensions remove some).
+for (const m of ["log", "info", "debug", "warn", "error", "trace", "group", "groupEnd", "groupCollapsed", "count", "countReset", "dir", "dirxml", "table", "time", "timeLog", "timeEnd", "assert", "clear"]) {
+  if (typeof console[m] !== "function") console[m] = () => {};
+}
 let i32, bytes;
 const dec = new TextDecoder();
 function mk(err) {
@@ -755,6 +761,80 @@ const LANG = {
     });
   },
 };
+</script>
+
+<script id="w-scheme" type="text/plain">
+const LANG = {
+  async init() {
+    importScripts(BASE + "scheme.js");
+    self.BiwaScheme.define_libfunc("read-line", 0, 1, () => readLine());   // (read-line) is not built in
+    return "Scheme (BiwaScheme)";
+  },
+  async run(code) {
+    const B = self.BiwaScheme;
+    B.Port.current_output = new B.Port.CustomOutput((s) => emit(String(s)));
+    B.Port.current_error = new B.Port.CustomOutput((s) => emit(String(s), true));
+    B.Port.current_input = new B.Port.CustomInput((cb) => cb(readLine() + "\n"));
+    await new Promise((resolve, reject) => {
+      const it = new B.Interpreter((e) => reject(e));
+      it.evaluate(code, () => resolve());
+    });
+  },
+};
+</script>
+
+<script id="w-prolog" type="text/plain">
+// Prolog: the file is the program. Lines starting with  ?-  are queries that run after it loads
+// (all answers are printed). A  :- initialization(main).  directive works too.
+const LANG = {
+  async init() {
+    self.window = self;   // the Prolog library looks for "window" when it loads
+    importScripts(BASE + "prolog.js");
+    return "Prolog (Tau)";
+  },
+  async run(code) {
+    const session = pl.create(200000);
+    const out = (t) => { emit(String(t)); return true; };
+    session.streams.user_output.stream = { put: out, flush: () => true };
+    session.streams.user_error.stream = { put: (t) => { emit(String(t), true); return true; }, flush: () => true };
+    session.streams.user_input.stream = {
+      buffer: "",
+      get(len) { while (this.buffer.length < len) this.buffer += readLine() + "\n"; const t = this.buffer.substr(0, len); this.buffer = this.buffer.substr(len); return t; },
+      eof() { return false; },
+    };
+    const queries = [];
+    const program = code.split("\n").filter((l) => {
+      const m = /^\s*\?-\s*(.*)$/.exec(l);
+      if (m) { queries.push(m[1]); return false; }
+      return true;
+    }).join("\n");
+    const fail = (e) => new Error(session.format_answer(e));
+    await new Promise((res, rej) => session.consult(program, { script: false, success: res, error: (e) => rej(fail(e)) }));
+    for (const q of queries) {
+      emit("?- " + q + "\n");
+      await new Promise((res, rej) => session.query(q, { success: res, error: (e) => rej(fail(e)) }));
+      await new Promise((res) => {
+        let n = 0;
+        const next = () => session.answer({
+          success: (a) => { n++; emit(session.format_answer(a) + "\n"); if (n >= 50) { emit("(first 50 answers shown)\n"); res(); } else next(); },
+          fail: () => { if (!n) emit("false.\n"); res(); },
+          error: (e) => { emit(session.format_answer(e) + "\n", true); res(); },
+          limit: () => { emit("(inference limit reached)\n", true); res(); },
+        });
+        next();
+      });
+    }
+  },
+};
+</script>
+
+<script id="w-ts" type="text/plain">
+// TypeScript = the JavaScript runner + a step that removes the types first (types are not checked).
+(() => {
+  const init = LANG.init, run = LANG.run;
+  LANG.init = async () => { importScripts(BASE + "ts.js"); await init(); return "TypeScript"; };
+  LANG.run = (code, off) => run(sucrase.transform(code, { transforms: ["typescript"] }).code, off);
+})();
 </script>
 
 <script id="py-turtle" type="text/plain">
@@ -1509,6 +1589,47 @@ for i in range(1, 6):
       bi: words("cout cin cerr endl printf scanf puts getchar putchar malloc free strlen strcpy strcmp sqrt pow abs main setw setprecision NULL EOF"),
     },
   };
+  // TypeScript runs in the browser too: same runner as JavaScript, types removed first.
+  LANGS.ts = {
+    name: "TypeScript", exts: ["ts"], worker: "w-js", mime: "text/typescript", probe: "/ts.js",
+    extra: () => "const BASE = " + JSON.stringify(location.origin + "/") + ";\n",
+    after: () => $("w-ts").textContent,
+    token: new RegExp(LANGS.js.token.source, "gm"),
+    kw: new Set([...LANGS.js.kw, ...words("interface type enum implements namespace declare readonly abstract public private protected as is keyof infer satisfies")]),
+    bi: new Set([...LANGS.js.bi, ...words("string number boolean any unknown never object Record Partial Required Readonly Promise")]),
+  };
+  // More languages that run fully in the browser (no server, no internet after the first visit).
+  const BASE_URL = () => "const BASE = " + JSON.stringify(location.origin + "/") + ";\n";
+  LANGS.scm = {
+    name: "Scheme", exts: ["scm", "ss"], worker: "w-scheme", mime: "text/x-scheme", probe: "/scheme.js", extra: BASE_URL,
+    token: /(;.*$|#\|[\s\S]*?\|#)|("(?:\\.|[^"\\])*")|\b(\d+\.?\d*)\b|([^\s()'"`,;]+)/gm,
+    kw: words("define lambda let let* letrec if cond else case and or not begin do set! quote quasiquote unquote delay define-syntax syntax-rules let-values when unless define-record-type"),
+    bi: words("display newline read-line read write car cdr cons list map for-each append length reverse apply null? pair? number? string? symbol? zero? + - * / = < > <= >= abs min max sqrt expt modulo remainder quotient string-append number->string string->number list-ref vector make-vector vector-ref vector-set! assoc member eq? equal?"),
+  };
+  LANGS.pl = {
+    name: "Prolog", exts: ["pl", "pro"], worker: "w-prolog", mime: "text/x-prolog", probe: "/prolog.js", extra: BASE_URL,
+    token: /(%.*$|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(\d+\.?\d*|[A-Z_]\w*)\b|\b([a-z]\w*)\b/gm,
+    kw: words("is mod rem not dynamic discontiguous initialization"),
+    bi: words("write nl print read assert asserta assertz retract findall bagof setof member append length reverse sort msort nth0 nth1 atom_codes atom_length atom_chars format between succ plus halt true fail forall"),
+  };
+  // Languages that cannot run inside a browser run on the code server (needs internet). Everything above stays local.
+  const CLIKE = /(\/\/.*$|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\[\s\S]|[^`\\])*`)|\b(0[xX][\da-fA-F_]+|\d[\d_]*\.?\d*(?:[eE][+-]?\d+)?[fFlLuUdD]*)\b|\b([A-Za-z_$][\w$]*)\b/gm;
+  const remote = (name, ext, id, mime, kw, bi) => ({ name, exts: [ext], remote: id, mime, token: CLIKE, kw: words(kw), bi: words(bi) });
+  LANGS.java = remote("Java", "java", "java", "text/x-java",
+    "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while var record true false null",
+    "String System Math Integer Double Long Boolean Character List ArrayList Map HashMap Set HashSet Scanner Arrays Collections Object Exception out println print main");
+  LANGS.cs = remote("C#", "cs", "csharp", "text/x-csharp",
+    "abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while var async await record",
+    "Console Math List Dictionary String Int32 Convert Environment System Linq Task WriteLine ReadLine Write");
+  LANGS.go = remote("Go", "go", "go", "text/x-go",
+    "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil",
+    "fmt Println Printf Sprintf Scan Scanln len cap make new append copy delete panic recover string int int64 float64 bool byte rune error os bufio strings strconv math");
+  LANGS.rs = remote("Rust", "rs", "rust", "text/x-rust",
+    "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while",
+    "println print format vec Vec String Option Some None Result Ok Err Box i32 i64 u32 u64 f64 bool usize str char main std io");
+  LANGS.kt = remote("Kotlin", "kt", "kotlin", "text/x-kotlin",
+    "as break class continue do else false for fun if in interface is null object package return super this throw true try typealias typeof val var when while by catch constructor finally init import override open abstract sealed data enum companion",
+    "println print readLine String Int Double Boolean List MutableList Map mapOf listOf arrayOf main");
   const EXT = Object.create(null);
   for (const k in LANGS) for (const e of LANGS[k].exts) EXT[e] = k;
   const EXT_LIST = Object.keys(EXT).map((e) => "." + e).join(", ");
@@ -1815,6 +1936,7 @@ for i in range(1, 6):
   }
 
   let offlineReady = false;
+  let serverReady = false;   // is a code server connected? (only then are server languages offered)
   const rt = {};          // one runtime per language: { worker, i32, bytes, state, label }
   const offline = {};     // per language: cached for offline use?
   let running = null;     // language key that is running right now
@@ -1823,7 +1945,7 @@ for i in range(1, 6):
 
   function workerSource(key) {
     const L = LANGS[key];
-    return $("w-common").textContent + (L.extra ? L.extra() : "") + $(L.worker).textContent;
+    return $("w-common").textContent + (L.extra ? L.extra() : "") + $(L.worker).textContent + (L.after ? L.after() : "");
   }
 
   function updateUI() {
@@ -1833,10 +1955,14 @@ for i in range(1, 6):
     inputEl.setAttribute("aria-label", (running ? LANGS[running].name : nm) + " input");
     langSel.value = k || "";
     langSel.disabled = !!running;
-    runBtn.disabled = !!running || !r || r.state !== "ready";
+    const rem = k && LANGS[k].remote;
+    stdinBox.style.display = rem ? "block" : "none";
+    runBtn.disabled = !!running || (rem ? (!serverReady || !navigator.onLine) : (!r || r.state !== "ready"));
     stopBtn.disabled = !running;
     let t;
-    if (!crossOriginIsolated) t = "Missing vercel.json headers. Upload vercel.json and redeploy.";
+    if (rem && !serverReady) t = nm + " needs a code server, which is not connected.";
+    else if (rem) t = navigator.onLine ? nm + " \u00b7 runs on the code server (needs internet)" : nm + " needs internet (code server). You are offline.";
+    else if (!crossOriginIsolated) t = "Missing vercel.json headers. Upload vercel.json and redeploy.";
     else if (!k) t = "Unknown file type. Rename it to " + EXT_LIST + ".";
     else if (!r || r.state === "loading") t = "Loading " + nm + "...";
     else if (r.state === "fail") t = "Failed to load " + nm + ". Check your connection and reload.";
@@ -1864,7 +1990,7 @@ for i in range(1, 6):
   // Load the runtime for the open file's language (once; retried if it failed).
   function syncLang() {
     const k = curKey();
-    if (k && (!rt[k] || rt[k].state === "fail")) startRt(k);
+    if (k && !LANGS[k].remote && (!rt[k] || rt[k].state === "fail")) startRt(k);
     updateUI();
   }
 
@@ -1896,9 +2022,10 @@ for i in range(1, 6):
   function run() {
     if (runBtn.disabled) return;
     const k = curKey();
+    if (LANGS[k].remote) { runRemote(k); return; }
     running = k;
     outEl.textContent = "";
-    gfxReset(k === "js");
+    gfxReset(k === "js" || k === "ts");
     sndReset(); sndInit();
     rt[k].gkeys.fill(0);
     updateUI();
@@ -1919,7 +2046,7 @@ for i in range(1, 6):
   }
 
   /* ---------- graphics window: programs draw here, keys and mouse go back to them ---------- */
-  console.info("Cronoff - made by yehon106");
+  try { console.info("Cronoff - made by yehon106"); } catch (e) {}   // decorative, must never stop the page
   const gfxWrap = $("gfxWrap");
   let gfxEl = $("gfx"), gctx = gfxEl.getContext("2d"), offc = null;
   const G_METHODS = new Set("save restore scale rotate translate transform setTransform resetTransform beginPath closePath moveTo lineTo bezierCurveTo quadraticCurveTo arc arcTo ellipse rect roundRect fill stroke clip clearRect fillRect strokeRect fillText strokeText setLineDash".split(" "));
@@ -2053,12 +2180,60 @@ for i in range(1, 6):
     } catch {}
   }
 
-  const langSel = $("lang");
-  for (const k in LANGS) {
-    const o = document.createElement("option");
-    o.value = k; o.textContent = LANGS[k].name;
-    langSel.appendChild(o);
+  /* ---------- code server: only for languages that cannot run in the browser ---------- */
+  const stdinBox = $("stdinBox");
+  let remoteCtl = null;
+  async function runRemote(k) {
+    const L = LANGS[k], ctl = new AbortController();
+    remoteCtl = ctl; running = k;
+    outEl.textContent = "";
+    gfxReset(false); sndReset();
+    updateUI();
+    write("Running " + L.name + " on the code server...\n", "info");
+    try {
+      const access = localStorage.getItem("cronoff-access") || "";
+      const r = await fetch("/api/run", {
+        method: "POST", signal: ctl.signal,
+        headers: Object.assign({ "Content-Type": "application/json" }, access ? { "x-access-code": access } : {}),
+        body: JSON.stringify({ lang: L.remote, code: codeEl.value, stdin: stdinBox.value }),
+      });
+      const j = await r.json().catch(() => ({}));
+      outEl.textContent = "";
+      if (r.status === 401) {
+        const c = prompt("This code server needs an access code:");
+        if (c) { localStorage.setItem("cronoff-access", c); write("Saved. Press Run again.\n", "info"); }
+        else write("Access code needed.\n", "err");
+      } else if (!r.ok) {
+        write((j.message || "The code server could not run this (" + r.status + ").") + "\n", "err");
+      } else {
+        if (j.stdout) write(j.stdout.endsWith("\n") ? j.stdout : j.stdout + "\n", "");
+        if (j.stderr) write(j.stderr.endsWith("\n") ? j.stderr : j.stderr + "\n", "err");
+        if (j.note) write(j.note + "\n", "info");
+        write("--- finished" + (j.code ? " (exit code " + j.code + ")" : "") + " ---\n", "info");
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+      outEl.textContent = "";
+      write(navigator.onLine ? "Could not reach the code server.\n" : L.name + " needs internet. You are offline.\n", "err");
+    } finally {
+      if (remoteCtl === ctl) { remoteCtl = null; running = null; updateUI(); }
+    }
   }
+  window.addEventListener("online", () => updateUI());
+  window.addEventListener("offline", () => updateUI());
+
+  const langSel = $("lang");
+  function buildLangOptions() {
+    while (langSel.options.length > 1) langSel.remove(1);
+    for (const k in LANGS) {
+      if (LANGS[k].remote && !serverReady) continue;
+      const o = document.createElement("option");
+      o.value = k; o.textContent = LANGS[k].name + (LANGS[k].remote ? " (online)" : "");
+      langSel.appendChild(o);
+    }
+    langSel.value = curKey() || "";
+  }
+  buildLangOptions();
   // Picking a language swaps the open file's extension (the language always follows the extension).
   langSel.addEventListener("change", () => {
     if (running || !langSel.value) { updateUI(); return; }
@@ -2075,6 +2250,7 @@ for i in range(1, 6):
     write("--- stopped ---\n", "info");
     sndReset();
     hideInput();
+    if (LANGS[k].remote) { if (remoteCtl) remoteCtl.abort(); remoteCtl = null; updateUI(); return; }
     startRt(k);
   });
   $("send").addEventListener("click", send);
@@ -2097,13 +2273,14 @@ for i in range(1, 6):
   });
 
   syncLang();
+  fetch("/api/run").then((x) => (x.ok ? x.json() : null)).then((j) => { serverReady = !!(j && j.ready); buildLangOptions(); updateUI(); }).catch(() => {});
 
   /* ---------- offline support ---------- */
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js")
       .then(() => navigator.serviceWorker.ready)
       .then(async () => {
-        for (const k of Object.keys(LANGS)) offline[k] = !!(await caches.match(LANGS[k].probe));
+        for (const k of Object.keys(LANGS)) if (LANGS[k].probe) offline[k] = !!(await caches.match(LANGS[k].probe));
         offlineReady = true;
         updateUI();
       })
