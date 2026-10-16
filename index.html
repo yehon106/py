@@ -109,9 +109,9 @@
 </header>
 <div id="setPanel" role="group" aria-label="Editor settings" hidden>
   <label title="Typing ( [ { or a quote adds the closing one"><input type="checkbox" data-set="autoClose"> Auto-close brackets and quotes</label>
-  <label title="Enter between foo( and our ) removes the ) instead of pushing it down. Shift+Enter keeps it."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
+  <label title="Off (default): Enter leaves the closers we added on the same line and starts a new line below. On: Enter deletes the closers we added."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
   <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
-  <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
+  <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). In Python, Enter on if/for/def/else... with no colon adds the colon. Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
 </div>
 <main id="main" data-layout="right">
   <section id="editorSec">
@@ -1918,6 +1918,38 @@ for i in range(1, 6):
       return { text: text.slice(0, ls) + ins + text.slice(le), selection: [caret(s), caret(e)], ours: outOurs, edit: ins === text.slice(ls, le) ? null : { from: ls, to: le, ins } };
     }
 
+    // Python: a line that starts a block (if, for, def, else...) but has no colon yet. Returns where the colon goes, or -1.
+    function colonSpot(text, end, lang) {
+      if (!lang || lang.key !== "py") return -1;
+      const ls = lineStart(text, end), le = lineEnd(text, end), line = text.slice(ls, le);
+      const m = /^[ \t]*(?:(?:if|elif|while|for|def|class|with|except)\b|async[ \t]+(?:def|for|with)\b|(else|try|finally)\b)/.exec(line);
+      if (!m) return -1;
+      const kw0 = ls + /^[ \t]*/.exec(line)[0].length, toks = tokens(text, lang);
+      if (toks.some((k) => k.s <= kw0 && kw0 < k.e)) return -1;                       // inside a string or comment
+      const com = toks.find((k) => k.t === "comment" && k.s >= kw0 && k.s < le);
+      let ce = com ? com.s : le;
+      while (ce > kw0 && (text[ce - 1] === " " || text[ce - 1] === "\t")) ce--;
+      if (end < ce) return -1;                                                          // caret is in the middle of the statement
+      if (m[1] && text.slice(kw0 + m[1].length, ce).trim() !== "") return -1;          // else/try/finally take nothing
+      let depth = 0;
+      for (let i = kw0; i < ce; i++) {
+        const k = toks.find((x) => x.s <= i && i < x.e);
+        if (k) { i = k.e - 1; continue; }
+        const c = text[i];
+        if (OPEN[c]) depth++; else if (CLOSE[c]) depth--;
+        else if (c === ":" && depth === 0 && text[i + 1] !== "=") return -1;           // already has its colon (or is a one-liner)
+      }
+      if (depth > 0) return -1;
+      if (check(text.slice(0, ce), lang).some((q) => /never closed/.test(q.msg))) return -1;   // statement continues on the next line
+      return ce;
+    }
+    function colonResult(text, cs, end, ours) {
+      const ls = lineStart(text, end), le = lineEnd(text, end);
+      const ind = /^[ \t]*/.exec(text.slice(ls, le))[0] + INDENT;
+      const ins = ":" + text.slice(cs, le) + "\n" + ind;
+      return result(text, cs, le, ins, cs + ins.length, cs + ins.length, ours);
+    }
+
     function handle(text, sel, key, settings, oursIn, lang) {
       const ours = cleanOurs(text, oursIn), has = new Set(ours);
       const s = Math.min(sel[0], sel[1]), e = Math.max(sel[0], sel[1]), collapsed = s === e;
@@ -1993,7 +2025,15 @@ for i in range(1, 6):
           while (has.has(end)) end++;
           return result(text, s, end, "\n" + ind, s + 1 + ind.length, s + 1 + ind.length, ours);
         }
+        if (collapsed && has.has(s)) {                                                 // foo(|) -> foo() and a new line: our closers stay on this line
+          let end = s;
+          while (has.has(end)) end++;
+          if (settings.autoIndent) { const cs = colonSpot(text, end, lang); if (cs >= 0) return colonResult(text, cs, end, ours); }
+          const ind2 = settings.autoIndent ? newIndent(text, end, lang) : "";
+          return result(text, end, end, "\n" + ind2, end + 1 + ind2.length, end + 1 + ind2.length, ours);
+        }
         if (!settings.autoIndent) return null;
+        if (collapsed) { const cs = colonSpot(text, s, lang); if (cs >= 0) return colonResult(text, cs, s, ours); }
         return result(text, s, e, "\n" + ind, s + 1 + ind.length, s + 1 + ind.length, ours);
       }
 
@@ -2596,8 +2636,8 @@ for i in range(1, 6):
   });
 
   /* ---------- smart editing: wiring for the edit engine ---------- */
-  const SKEY = "pyro-editset";
-  const settings = { autoClose: true, enterRemoves: true, autoIndent: true, markers: true };
+  const SKEY = "pyro-editset2";
+  const settings = { autoClose: true, enterRemoves: false, autoIndent: true, markers: true };
   try {
     const s = JSON.parse(localStorage.getItem(SKEY) || "null");
     if (s) for (const k in settings) if (typeof s[k] === "boolean") settings[k] = s[k];
