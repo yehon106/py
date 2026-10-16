@@ -112,7 +112,7 @@
   <label title="Off (default): Enter leaves the closers we added on the same line and starts a new line below. On: Enter deletes the closers we added."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
   <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
   <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). In Python, Enter on if/for/def/else... with no colon adds the colon. Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
-  <div style="font-size:11px;opacity:.6">Editor build: p2-colon-keep</div>
+  <div style="font-size:11px;opacity:.6">Editor build: p2-colon-dedent</div>
 </div>
 <main id="main" data-layout="right">
   <section id="editorSec">
@@ -1944,11 +1944,29 @@ for i in range(1, 6):
       if (check(text.slice(0, ce), lang).some((q) => /never closed/.test(q.msg))) return -1;   // statement continues on the next line
       return ce;
     }
-    function colonResult(text, cs, end, ours) {
+    // else / elif / except / finally: where should this line's indent go? Returns the indent of its if/try/..., or -1.
+    function dedentFor(text, ls, lang) {
+      if (!lang || lang.key !== "py") return -1;
+      const line = text.slice(ls, lineEnd(text, ls));
+      const m = /^( *)(else|elif|except|finally)\b/.exec(line);
+      if (!m || !m[1].length || kindOfChar(text, ls + m[1].length, lang) !== "code") return -1;
+      const need = { else: /^(if|elif|for|while|try|except)\b/, elif: /^(if|elif)\b/, except: /^(try|except)\b/, finally: /^(try|except|else)\b/ }[m[2]];
+      for (let p = ls; p > 0;) {
+        const st = lineStart(text, p - 1), l = text.slice(st, p - 1);
+        p = st;
+        if (l.trim() === "") continue;
+        const li = /^ */.exec(l)[0].length;
+        if (li < m[1].length) return need.test(l.slice(li)) ? li : -1;
+      }
+      return -1;
+    }
+    function colonResult(text, cs, end, ours, lang0) {
       const ls = lineStart(text, end), le = lineEnd(text, end);
-      const ind = /^[ \t]*/.exec(text.slice(ls, le))[0] + INDENT;
-      const ins = ":" + text.slice(cs, le) + "\n" + ind;
-      return result(text, cs, le, ins, cs + ins.length, cs + ins.length, ours);
+      const lead = /^[ \t]*/.exec(text.slice(ls, le))[0], tg = dedentFor(text, ls, lang0);
+      const newLead = tg >= 0 ? " ".repeat(tg) : lead, d = newLead.length - lead.length;
+      const ins = newLead + text.slice(ls + lead.length, cs) + ":" + text.slice(cs, le) + "\n" + newLead + INDENT;
+      const o = ours.map((q) => (q < ls ? q : q < le ? q + d : q + ins.length - (le - ls)));
+      return { text: text.slice(0, ls) + ins + text.slice(le), selection: [ls + ins.length, ls + ins.length], ours: o, edit: { from: ls, to: le, ins } };
     }
 
     function handle(text, sel, key, settings, oursIn, lang) {
@@ -1958,6 +1976,14 @@ for i in range(1, 6):
 
       /* ----- typed characters ----- */
       if (k.length === 1) {
+        if (k === ":" && collapsed && settings.autoIndent && lang && lang.key === "py") {
+          const ls = lineStart(text, s), tg = dedentFor(text, ls, lang);
+          if (tg >= 0 && ctxAt(text, s, lang) === "code") {
+            const lead = /^ */.exec(text.slice(ls, s))[0], ins = " ".repeat(tg) + text.slice(ls + lead.length, s) + ":", d = tg - lead.length;
+            const o = ours.map((q) => (q < ls ? q : q < s ? q + d : q + ins.length - (s - ls)));
+            return { text: text.slice(0, ls) + ins + text.slice(s), selection: [ls + ins.length, ls + ins.length], ours: o, edit: { from: ls, to: s, ins } };
+          }
+        }
         const isOpen = !!OPEN[k], isQuote = quoteOk(k, lang);
         // typing a closer that is already there and ours: type over it (and over our closers in between)
         if (collapsed && (CLOSE[k] || isQuote || k === '"' || k === "'" || k === "`")) {
@@ -2029,12 +2055,12 @@ for i in range(1, 6):
         if (collapsed && has.has(s)) {                                                 // foo(|) -> foo() and a new line: our closers stay on this line
           let end = s;
           while (has.has(end)) end++;
-          if (settings.autoIndent) { const cs = colonSpot(text, end, lang); if (cs >= 0) return colonResult(text, cs, end, ours); }
+          if (settings.autoIndent) { const cs = colonSpot(text, end, lang); if (cs >= 0) return colonResult(text, cs, end, ours, lang); }
           const ind2 = settings.autoIndent ? newIndent(text, end, lang) : "";
           return result(text, end, end, "\n" + ind2, end + 1 + ind2.length, end + 1 + ind2.length, ours);
         }
         if (!settings.autoIndent) return null;
-        if (collapsed) { const cs = colonSpot(text, s, lang); if (cs >= 0) return colonResult(text, cs, s, ours); }
+        if (collapsed) { const cs = colonSpot(text, s, lang); if (cs >= 0) return colonResult(text, cs, s, ours, lang); }
         return result(text, s, e, "\n" + ind, s + 1 + ind.length, s + 1 + ind.length, ours);
       }
 
