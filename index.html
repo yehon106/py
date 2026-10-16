@@ -112,7 +112,7 @@
   <label title="Off (default): Enter leaves the closers we added on the same line and starts a new line below. On: Enter deletes the closers we added."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
   <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
   <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). In Python, Enter on if/for/def/else... with no colon adds the colon. Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
-  <div style="font-size:11px;opacity:.6">Editor build: p2-colon-dedent</div>
+  <div style="font-size:11px;opacity:.6">Editor build: p2-friendly-errors</div>
 </div>
 <main id="main" data-layout="right">
   <section id="editorSec">
@@ -268,6 +268,59 @@ onmessage = async (ev) => {
 </script>
 
 <script id="w-py" type="text/plain">
+/* friendly errors: turns Python's long traceback into the line, the error and a hint */
+function friendlyPy(raw) {
+  const lines = String(raw).replace(/\s+$/, "").split("\n");
+  const last = lines[lines.length - 1].trim();
+  const em = /^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning)|StopIteration)\b:?\s*(.*)$/.exec(last);
+  if (!em) return String(raw);
+  const frames = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*File "<exec>", line (\d+)(?:, in (.+))?$/.exec(lines[i]);
+    if (!m) continue;
+    let src = "";
+    const nx = lines[i + 1];
+    if (nx !== undefined && /^\s{4}\S/.test(nx) && !/^\s*File "/.test(nx) && !/^\s*[\^~]+\s*$/.test(nx)) src = nx.trim();
+    frames.push({ line: m[1], fn: m[2] && m[2] !== "<module>" ? m[2] : "", src });
+  }
+  const name = em[1], text = em[2], where = frames[frames.length - 1];
+  const hints = [
+    [/expected an indented block/, "After a line that ends with a colon (if, for, def, else...) the next line must be indented. Press Tab at the start of that line."],
+    [/unexpected indent/, "This line is indented, but nothing above asks for it. Remove the extra spaces at the start."],
+    [/unindent does not match|inconsistent use of tabs/, "The spaces at the start of this line do not line up with the lines above it."],
+    [/unterminated string literal|unterminated triple/, "A quote is missing its closing partner. Check this line for a missing \" or '."],
+    [/was never closed/, "A bracket was opened but never closed. Look for a missing ) ] or }."],
+    [/unmatched '/, "There is a closing bracket with no opening one. Check the brackets on this line."],
+    [/expected ':'/, "Add a colon (:) at the end of this line."],
+    [/^SyntaxError/, "Python cannot read this line. Look for a missing colon, quote or bracket on this line or the one just above it."],
+    [/^NameError/, "Python does not know this name. Check the spelling (capital letters count), or create it before using it."],
+    [/^UnboundLocalError/, "This name is used before it gets a value inside the function."],
+    [/^ZeroDivisionError/, "You divided by zero."],
+    [/^IndexError/, "That position does not exist in the list. The first item is number 0."],
+    [/^KeyError/, "That key is not in the dictionary."],
+    [/^ValueError/, "The value is the right kind but the wrong content, for example int(\"abc\")."],
+    [/^TypeError/, "A value is the wrong kind for this, for example adding a number to text. Convert with str() or int()."],
+    [/^AttributeError/, "That thing has no such name or method. Check the spelling."],
+    [/^RecursionError/, "A function keeps calling itself and never stops."],
+    [/^FileNotFoundError/, "That file does not exist here. Files do not carry over between runs in the browser."],
+    [/^EOFError/, "The program asked for input but there was none left."],
+  ];
+  const key = name + ": " + text;
+  const hint = (hints.find((h) => h[0].test(key)) || [])[1];
+  let out = "";
+  if (where) {
+    out += "Error on line " + where.line + (where.fn ? " (inside " + where.fn + ")" : "") + "\n";
+    if (where.src) out += "    " + where.src + "\n";
+  }
+  out += name + (text ? ": " + text : "") + "\n";
+  if (frames.length > 1) {
+    const f = frames[frames.length - 2];
+    out += "It was called from line " + f.line + (f.src ? ":  " + f.src : "") + "\n";
+  }
+  if (hint) out += "\nHint: " + hint + "\n";
+  return out.replace(/\n+$/, "");
+}
+
 let pyodide;
 const LANG = {
   async init() {
@@ -295,12 +348,13 @@ const LANG = {
       code = await pyodide.globals.get("_cronoff_prep")(code);
       await pyodide.runPythonAsync(code, { globals: g });
     } catch (e) {
-      const msg = String((e && e.message) || e);
-      const last = msg.trim().split("\n").pop();
+      const rawMsg = String((e && e.message) || e);
+      const last = rawMsg.trim().split("\n").pop();
       if (/^SystemExit/.test(last)) return;    // sys.exit() / exit() end the program quietly
+      const msg = friendlyPy(rawMsg);
       if (/No module named 'tkinter'/.test(last)) throw new Error(msg + "\n\ntkinter does not work in the browser. For windows use turtle, pygame or gfx instead.");
       if (/^ModuleNotFoundError/.test(last)) throw new Error(msg + "\n\nTip: for pure-Python packages from PyPI run this first:\nimport micropip\nawait micropip.install('package-name')");
-      throw e;
+      throw new Error(msg);
     } finally {
       g.destroy();
     }
