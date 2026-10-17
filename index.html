@@ -56,6 +56,13 @@
   #tabs::-webkit-scrollbar { display: none; }
   .ftab { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 8px 10px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
   .ftab:hover { color: var(--ink); }
+  .ftab .ind { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; }
+  .ftab .ind.run { width: 11px; height: 11px; border: 2px solid var(--muted); border-top-color: var(--accent); animation: indspin .8s linear infinite; }
+  .ftab .ind.wait { width: 11px; height: 11px; border: 2px dotted var(--muted); }
+  .ftab .ind.input { background: var(--accent); }
+  .ftab .ind.err { background: var(--err); }
+  @keyframes indspin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .ftab .ind.run { animation: none; } }
   .ftab.active { color: var(--ink); border-bottom-color: var(--accent); }
   .ftab .x { border: 0; padding: 0 5px; font-size: 16px; font-weight: 400; line-height: 1.2; color: var(--muted); }
   .ftab .x:hover:not(:disabled) { color: var(--err); }
@@ -83,6 +90,7 @@
   #setPanel[hidden] { display: none; }
   #setPanel label { display: flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
   #setPanel input { accent-color: var(--accent); }
+  #setPanel select { font: inherit; background: var(--edit); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
   #stdinBox { display: none; width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 13px; padding: 6px 10px; color: var(--ink); background: var(--edit); border: 0; border-bottom: 1px solid var(--line); outline: none; }
   #gfxWrap { display: none; flex: 0 0 auto; max-height: 75%; overflow: auto; background: #000; border-bottom: 1px solid var(--line); }
   #gfx { display: block; max-width: 100%; height: auto; margin: 0 auto; outline: none; background: #000; }
@@ -111,8 +119,9 @@
   <label title="Typing ( [ { or a quote adds the closing one"><input type="checkbox" data-set="autoClose"> Auto-close brackets and quotes</label>
   <label title="Off (default): Enter leaves the closers we added on the same line and starts a new line below. On: Enter deletes the closers we added."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
   <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
+  <label title="How many programs may run at the same time in different tabs. More runs need more memory; phones are held to 2."><span>Runs at once</span> <select id="maxRuns" aria-label="Runs at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
   <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). In Python, Enter on if/for/def/else... with no colon adds the colon. Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
-  <div style="font-size:11px;opacity:.6">Editor build: c1-tab-routing</div>
+  <div style="font-size:11px;opacity:.6">Editor build: p4-p3-checks</div>
 </div>
 <main id="main" data-layout="right">
   <section id="editorSec">
@@ -255,12 +264,18 @@ onmessage = async (ev) => {
     }
   } else if (m.type === "ev") {
     if (self.__gfxEvent) self.__gfxEvent(m.ev);
+  } else if (m.type === "check") {
+    // Syntax check of the code as typed (never runs it). Answers [{line, col, msg}]; any trouble means "no problems found".
+    let problems = [];
+    try { if (LANG.check) problems = (await LANG.check(m.code)) || []; } catch (e) { problems = []; }
+    postMessage({ type: "check", tabId: m.tabId, seq: m.seq, problems });
   } else if (m.type === "run") {
     TAB = m.tabId === undefined ? null : m.tabId;
     try {
       await LANG.run(m.code, m.canvas);
     } catch (e) {
       O.flush(); flushOut();
+      if (typeof errLineOf === "function") { const n = errLineOf(e); if (n) post({ type: "errline", line: n }); }
       post({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
     } finally {
       O.flush(); E.flush(); flushOut(); gfxFlush();
@@ -339,6 +354,17 @@ const LANG = {
     pyodide.runPython(PREP);                   // time.sleep, requests, matplotlib, asyncio.run helpers
     return "Python " + pyodide.version;
   },
+  check(code) {
+    if (typeof pyodide === "undefined" || !pyodide) return [];
+    if (!this._chk) {
+      pyodide.runPython("def _cronoff_check(code):\n    import ast\n    try:\n        compile(code, '<exec>', 'exec', flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)\n    except SyntaxError as e:\n        return [e.lineno or 1, e.offset or 0, e.msg or 'invalid syntax']\n    return None");
+      this._chk = pyodide.globals.get("_cronoff_check");
+    }
+    const r = this._chk(code);
+    if (!r) return [];
+    const a = r.toJs(); r.destroy();
+    return [{ line: a[0], col: a[1], msg: String(a[2]) }];
+  },
   async run(code) {
     const g = pyodide.globals.get("dict")();
     g.set("__name__", "__main__");             // so `if __name__ == "__main__":` runs
@@ -397,7 +423,21 @@ function ins(v, d, seen) {
   const pad = "  ".repeat(d + 1);
   return pre + open + "\n" + items.map((s) => pad + s).join(",\n") + "\n" + "  ".repeat(d) + close;
 }
+// Line of the user's code that a runtime error came from (the code runs inside a function that adds 2 lines on top).
+function errLineOf(e) {
+  const m = /<anonymous>:(\d+):\d+/.exec(String((e && e.stack) || ""));
+  return m ? Math.max(0, +m[1] - 2) : 0;
+}
+// Syntax check with the sucrase parser (the same file that removes TypeScript types). Loaded on first use.
+let sucraseBad = false;
+function sucraseCheck(code, transforms) {
+  if (typeof sucrase === "undefined" && !sucraseBad) { try { importScripts(BASE + "ts.js"); } catch (e) { sucraseBad = true; } }
+  if (typeof sucrase === "undefined") return [];
+  try { sucrase.transform(code, { transforms }); return []; }
+  catch (e) { return e && e.loc ? [{ line: e.loc.line, col: e.loc.column, msg: String(e.message).replace(/\s*\(\d+:\d+\)\s*$/, "") }] : []; }
+}
 function report(e) {
+  { const n = errLineOf(e); if (n) post({ type: "errline", line: n }); }
   emit((e && e.name ? e.name + ": " + e.message : ins(e, 0, [])) + "\n", true);
 }
 
@@ -406,6 +446,7 @@ const LANG = {
     self.addEventListener("unhandledrejection", (ev) => { ev.preventDefault(); report(ev.reason); });
     return "JavaScript";
   },
+  check(code) { return sucraseCheck(code, []); },
   async run(code, off) {
     const say = (err) => (...a) => emit(a.map((x) => ins(x, 0, [])).join(" ") + "\n", err);
     const clocks = {};
@@ -675,6 +716,14 @@ const LANG = {
     lua.global.close();
     return String(v);
   },
+  async check(code) {
+    const lua = await factory.createEngine();
+    try { await lua.global.loadString(code, "=main"); return []; }
+    catch (e) {
+      const m = /(?:^|\s)main:(\d+):\s*([^\n]*)/.exec(String((e && e.message) || e));
+      return m ? [{ line: +m[1], col: 0, msg: m[2] }] : [];
+    } finally { lua.global.close(); }
+  },
   async run(code) {
     const lua = await factory.createEngine();   // fresh Lua state for every run
     try {
@@ -870,6 +919,25 @@ const LANG = {
     importScripts(BASE + "prolog.js");
     return "Prolog (Tau)";
   },
+  check(code) {
+    // Load the clauses only: directives and queries are left out, so nothing runs.
+    const lines = code.split("\n");
+    if (lines.some((l) => /^\s*:-\s*op\(/.test(l))) return [];          // own operators: we cannot judge the syntax
+    let prevEnds = true;
+    const program = lines.map((l) => {
+      const body = l.replace(/%.*$/, "").trim();
+      const out = /^\s*\?-/.test(l) || (/^\s*:-/.test(l) && prevEnds) ? "" : l;
+      if (body) prevEnds = /\.$/.test(body);
+      return out;
+    }).join("\n");
+    const s = pl.create(1000);
+    let res = [];
+    s.consult(program, { script: false, success() {}, error(e) {
+      const m = /syntax_error\((.*)\),\[line\((\d+)\),column\((\d+)\)/.exec(s.format_answer(e));
+      if (m) res = [{ line: +m[2], col: +m[3], msg: "Syntax error: " + m[1] }];
+    } });
+    return res;
+  },
   async run(code) {
     const session = pl.create(200000);
     const out = (t) => { emit(String(t)); return true; };
@@ -912,6 +980,7 @@ const LANG = {
   const init = LANG.init, run = LANG.run;
   LANG.init = async () => { importScripts(BASE + "ts.js"); await init(); return "TypeScript"; };
   LANG.run = (code, off) => run(sucrase.transform(code, { transforms: ["typescript"] }).code, off);
+  LANG.check = (code) => sucraseCheck(code, ["typescript"]);
 })();
 </script>
 
@@ -1574,6 +1643,7 @@ for i in range(1, 6):
     },
     js: {
       name: "JavaScript", exts: ["js", "mjs"], worker: "w-js", mime: "text/javascript",
+      extra: () => "const BASE = " + JSON.stringify(location.origin + "/") + ";\n",
       probe: "/",
       sample: [
         'const name = input("Your name? ");',
@@ -1745,16 +1815,72 @@ for i in range(1, 6):
   /* ---------- red markers, layer 1: brackets and strings ---------- */
   const mkEl = $("mk"), barEl = $("probBar");
   let marksOn = true, problems = [], marksTimer = 0, barIdx = 0;
+  const runErr = {};                  // tabId -> { line, msg, code }: where the last run failed (kept while the code is unchanged)
+  let baseProblems = [], synProblems = [], checkSeq = 0, checkWant = null;
+  const CHECK_LANGS = new Set(["js", "ts", "py", "lua", "pl"]);   // languages with a real syntax check (run in an idle worker)
   function queueMarks(v) {            // any edit clears the markers at once; they come back when you pause
     clearTimeout(marksTimer);
-    problems = [];
+    problems = []; baseProblems = []; synProblems = [];
     mkEl.textContent = v + "\n";
     barEl.hidden = true;
     if (marksOn) marksTimer = setTimeout(computeMarks, 300);
   }
+  // Start and end offsets of one line's text (without the indent); a blank line borrows the last line above it that has text.
+  function lineSpan(v, line) {
+    const starts = [0];
+    for (let i = v.indexOf("\n"); i >= 0; i = v.indexOf("\n", i + 1)) starts.push(i + 1);
+    for (let n = Math.min(line, starts.length); n >= 1; n--) {
+      const s0 = starts[n - 1];
+      let e0 = n < starts.length ? starts[n] - 1 : v.length;
+      let a = s0; while (a < e0 && /[ \t]/.test(v[a])) a++;
+      while (e0 > a && /[ \t\r]/.test(v[e0 - 1])) e0--;
+      if (e0 > a) return { s: a, e: e0, line: n };
+    }
+    return null;
+  }
   function computeMarks() {
     const v = codeEl.value, k = langOf(files[active].name), L = k && LANGS[k];
-    problems = L && marksOn ? EDIT.check(v, { key: k, token: L.token }) : [];
+    baseProblems = L && marksOn ? EDIT.check(v, { key: k, token: L.token }) : [];
+    synProblems = [];
+    renderMarks();
+    if (marksOn) askCheck(v);
+  }
+  // Ask an idle worker of this language for a real syntax check of the code (the answer arrives later).
+  function askCheck(v) {
+    const k = curKey(), id = tid();
+    if (!marksOn || !k || !CHECK_LANGS.has(k) || runs[id]) return;
+    const x = (pool[k] || []).find((w) => !w.owner && w.state === "ready" && w.worker);
+    if (!x) return;
+    checkWant = { id, seq: ++checkSeq, code: v };
+    x.worker.postMessage({ type: "check", tabId: id, seq: checkWant.seq, code: v });
+  }
+  // The error line of a finished run, and a short message, from what the program printed.
+  function errLineFrom(key, text) {
+    let m;
+    if (key === "py" && (m = /Error on line (\d+)/.exec(text))) return +m[1];
+    if (key === "lua" && (m = /(?:^|\s)(?:main|\[string "[^"]*"\]):(\d+):/.exec(text))) return +m[1];
+    if (key === "rb" && (m = /(?:\(eval[^)]*\)|main\.rb|\(main\)):(\d+)/.exec(text))) return +m[1];
+    if (key === "pl" && (m = /\[line\((\d+)\)/.exec(text))) return +m[1];
+    if (key === "cpp" && (m = /\bline (\d+)\b/i.exec(text))) return +m[1];
+    return 0;
+  }
+  function errMsgFrom(text) {
+    const ls = String(text).split("\n").map((x) => x.trim()).filter(Boolean);
+    const l = ls.find((x) => /^[\w.]*(Error|Exception)\b/.test(x)) || ls[0] || "Error";
+    return l.length > 110 ? l.slice(0, 107) + "..." : l;
+  }
+  // Draw all problems: brackets and strings, the syntax check, and the line where the last run failed.
+  function renderMarks() {
+    if (!marksOn) return;
+    const v = codeEl.value, list = baseProblems.slice(), seen = new Set(list.map((q) => q.line));
+    for (const q of synProblems) if (!seen.has(q.line)) { list.push(q); seen.add(q.line); }
+    const re = runErr[tid()];
+    if (re && re.code === v && !seen.has(re.line)) {
+      const sp = lineSpan(v, re.line);
+      if (sp) list.push({ s: sp.s, e: sp.e, line: sp.line, msg: re.msg + " (from the last run)" });
+    }
+    list.sort((a, b) => a.s - b.s);
+    problems = list;
     barIdx = 0;
     if (!problems.length) return;
     let html = "", last = 0;
@@ -2255,6 +2381,11 @@ for i in range(1, 6):
   const tabsEl = $("tabs");
   const MAX_TABS = 12;
   let renaming = false;
+  const runs = {};        // tabId -> { key, input, ctl, slot, err }: the tabs that are running (or waiting) right now
+  const pool = {};        // language key -> list of workers ("slots"); one slot runs one program at a time
+  const queue = [];       // tab ids waiting for a free slot
+  const tabMark = {};     // tabId -> "err" when its last run ended with errors
+  let gfxOwner = null;    // tabId that owns the one graphics canvas (and sound)
   function splitExt(n) {
     const i = n.lastIndexOf(".");
     return i > 0 ? [n.slice(0, i), n.slice(i)] : [n, ""];
@@ -2277,6 +2408,7 @@ for i in range(1, 6):
   }
   function switchTo(i) {
     active = i;
+    tabMark[files[i].id] = "";
     codeEl.value = files[i].code;
     codeEl.scrollTop = 0;
     codeEl.scrollLeft = 0;
@@ -2299,7 +2431,7 @@ for i in range(1, 6):
     if (files.length < 2) return;
     if (!confirm('Close "' + files[i].name + '"? Its code will be deleted.')) return;
     stopRun(files[i].id, true);
-    delete bufs[files[i].id];
+    delete bufs[files[i].id]; delete runErr[files[i].id];
     files.splice(i, 1);
     if (i < active) active -= 1;
     active = Math.min(active, files.length - 1);
@@ -2341,6 +2473,14 @@ for i in range(1, 6):
       t.className = "ftab" + (i === active ? " active" : "");
       t.setAttribute("role", "tab");
       t.tabIndex = 0;
+      const rn = runs[f.id];
+      const state = rn ? (rn.input ? "input" : (!rn.slot && !rn.ctl ? "wait" : "run")) : (tabMark[f.id] === "err" && i !== active ? "err" : "");
+      if (state) {
+        const ind = document.createElement("span");
+        ind.className = "ind " + state;
+        ind.title = { input: "Waiting for your input", wait: "Waiting for a free run slot", run: "Running", err: "Finished with errors" }[state];
+        t.appendChild(ind);
+      }
       const label = document.createElement("span");
       label.textContent = f.name;
       label.title = i === active ? "Click to rename" : f.name;
@@ -2430,8 +2570,13 @@ for i in range(1, 6):
   let serverReady = false;   // is a code server connected? (only then are server languages offered)
   const rt = {};          // one runtime per language: { worker, i32, bytes, state, label }
   const offline = {};     // per language: cached for offline use?
-  const runs = {};        // tabId -> { key, input, ctl }: the tabs that are running right now
-  let gfxOwner = null;    // tabId that owns the one graphics canvas (and sound)
+  // How many programs may run at once: the setting, held down on small phones (each Pyodide worker is heavy).
+  function maxRun() {
+    const mem = navigator.deviceMemory || 8, phone = /Android|iPhone|iPad|Mobi/i.test(navigator.userAgent);
+    const cap = mem <= 2 ? 1 : phone ? 2 : 4;
+    return Math.max(1, Math.min(cap, settings.maxRuns | 0 || 2));
+  }
+  function localCount() { let n = 0; for (const id in runs) if (runs[id].slot) n++; return n; }
   function hideInput() { inputRow.classList.remove("show"); inputEl.value = ""; }
   // The input row belongs to the active tab: show it only if that tab is waiting for input.
   function syncInput() {
@@ -2439,7 +2584,7 @@ for i in range(1, 6):
     if (run && run.input) { if (!inputRow.classList.contains("show")) inputRow.classList.add("show"); }
     else hideInput();
   }
-  function gRt() { const run = gfxOwner && runs[gfxOwner]; return run ? rt[run.key] : null; }
+  function gRt() { const run = gfxOwner && runs[gfxOwner]; return run ? run.slot : null; }
   function curKey() { return langOf(files[active].name); }
 
   function workerSource(key) {
@@ -2450,7 +2595,7 @@ for i in range(1, 6):
   function updateUI() {
     const k = curKey(), r = k && rt[k];
     const me = tid(), run = runs[me];
-    const busyBy = r && r.owner && r.owner !== me ? r.owner : null;   // another tab is using this language's worker
+    const langOk = !!(k && pool[k] && pool[k].some((x) => x.state === "ready"));
     const nm = k ? LANGS[k].name : "Code";
     codeEl.setAttribute("aria-label", nm + " code (Ctrl+Enter to run)");
     inputEl.setAttribute("aria-label", (run ? LANGS[run.key].name : nm) + " input");
@@ -2458,12 +2603,13 @@ for i in range(1, 6):
     langSel.disabled = !!run;
     const rem = k && LANGS[k].remote;
     stdinBox.style.display = rem ? "block" : "none";
-    runBtn.disabled = !!run || !!busyBy || (rem ? (!serverReady || !navigator.onLine) : (!r || r.state !== "ready"));
+    runBtn.disabled = !!run || (rem ? (!serverReady || !navigator.onLine) : !langOk);
     stopBtn.disabled = !run;
     let t;
     if (rem && !serverReady) t = nm + " needs a code server, which is not connected.";
     else if (rem) t = navigator.onLine ? nm + " \u00b7 runs on the code server (needs internet)" : nm + " needs internet (code server). You are offline.";
-    else if (busyBy) t = nm + " is busy running another file. Wait for it or stop it there.";
+    else if (run && !run.slot && !run.ctl) t = nm + " is waiting for a free run slot (" + maxRun() + " at once). Press Stop to cancel.";
+    else if (run && run.slot && run.slot.state !== "ready") t = "Starting a new " + nm + " runner...";
     else if (!crossOriginIsolated) t = "Missing vercel.json headers. Upload vercel.json and redeploy.";
     else if (!k) t = "Unknown file type. Rename it to " + EXT_LIST + ".";
     else if (!r || r.state === "loading") t = "Loading " + nm + "...";
@@ -2472,9 +2618,8 @@ for i in range(1, 6):
     statusEl.textContent = t;
   }
 
-  function startRt(key) {
+  function startSlot(key, r) {
     if (!crossOriginIsolated) { updateUI(); return; }
-    const r = rt[key] || (rt[key] = {});
     if (r.worker) r.worker.terminate();
     const sab = new SharedArrayBuffer(8 + 65536);
     r.i32 = new Int32Array(sab);
@@ -2484,11 +2629,43 @@ for i in range(1, 6):
     r.gkeys = new Uint8Array(r.gsab, 16, 256);
     const url = URL.createObjectURL(new Blob([workerSource(key)], { type: "text/javascript" }));
     r.worker = new Worker(url);
-    r.worker.onmessage = (ev) => onMsg(key, ev);
+    r.worker.onmessage = (ev) => onMsg(key, ev, r);
     r.worker.postMessage({ type: "init", sab, gsab: r.gsab });
     r.state = "loading"; r.label = ""; r.owner = null;
+  }
+  function startRt(key) {              // (re)load the first worker of a language
+    const p = pool[key] || (pool[key] = [{}]);
+    rt[key] = p[0];
+    startSlot(key, p[0]);
     updateUI();
   }
+  // A worker that is not busy: a ready one first, then one that is still loading, else a new one while the pool may grow.
+  function freeSlot(key) {
+    const p = pool[key] || [];
+    const idle = (x) => !x.owner && x.worker;
+    const got = p.find((x) => idle(x) && x.state === "ready") || p.find((x) => idle(x) && x.state === "loading");
+    if (got) return got;
+    if (p.length && p.length < maxRun() && crossOriginIsolated) { const x = {}; p.push(x); startSlot(key, x); return x; }
+    return null;
+  }
+  function dropFromQueue(id) { const i = queue.indexOf(id); if (i >= 0) queue.splice(i, 1); }
+  // Hands free workers to waiting tabs (first come, first served), starts the ones whose worker is ready.
+  function pump() {
+    for (let i = 0; i < queue.length;) {
+      const id = queue[i], run = runs[id];
+      if (!run) { queue.splice(i, 1); continue; }
+      if (!run.slot) {
+        if (localCount() >= maxRun()) { i++; continue; }
+        const x = freeSlot(run.key);
+        if (!x) { i++; continue; }
+        x.owner = id; run.slot = x;
+      }
+      if (run.slot.state === "ready") { queue.splice(i, 1); begin(id); } else i++;
+    }
+    updateUI(); markTabs();
+  }
+  function markTabs() { if (!renaming) renderTabs(); }
+
   // Load the runtime for the open file's language (once; retried if it failed).
   function syncLang() {
     const k = curKey();
@@ -2496,38 +2673,67 @@ for i in range(1, 6):
     updateUI();
   }
 
-  function onMsg(key, ev) {
-    const m = ev.data, r = rt[key], id = m.tabId, run = id ? runs[id] : null;
+  function onMsg(key, ev, slot) {
+    const m = ev.data, id = m.tabId, run = id ? runs[id] : null;
     if (m.type === "ready") {
-      r.state = "ready"; r.label = m.version;
-      updateUI();
+      slot.state = "ready"; slot.label = m.version;
+      pump();
+      if (curKey() === key) askCheck(codeEl.value);
     } else if (m.type === "fail") {
-      r.state = "fail";
-      updateUI();
+      slot.state = "fail";
+      const fp = pool[key];
+      if (fp && fp.indexOf(slot) > 0) { try { slot.worker.terminate(); } catch {} slot.worker = null; fp.splice(fp.indexOf(slot), 1); }
+      const oid = slot.owner, orun = oid && runs[oid];
+      slot.owner = null;
+      if (orun) {
+        delete runs[oid]; dropFromQueue(oid);
+        write("Failed to load " + LANGS[key].name + ". Check your connection and reload.\n", "err", oid);
+        tabMark[oid] = "err";
+      }
+      pump();
     } else if (m.type === "gfx" || m.type === "gfxshow" || m.type === "snd") {
       if (!run || !gfxAllowed(run, id)) return;
       if (m.type === "gfx") gfxApply(m.cmds);
       else if (m.type === "gfxshow") gfxShow();
       else sndApply(m.cmd);
+    } else if (m.type === "errline") {
+      if (run) run.errLine = m.line | 0;
+    } else if (m.type === "check") {
+      if (!checkWant || m.seq !== checkWant.seq || m.tabId !== tid() || codeEl.value !== checkWant.code) return;
+      const v = codeEl.value;
+      synProblems = (m.problems || []).map((q) => { const sp = lineSpan(v, q.line); return sp && { s: sp.s, e: sp.e, line: sp.line, msg: q.msg }; }).filter(Boolean);
+      renderMarks();
     } else if (m.type === "out") {
-      if (run) write(m.text, m.err ? "err" : "", id);
+      if (!run) return;
+      if (m.err) { run.err = true; if (run.errText.length < 4000) run.errText += m.text; }
+      write(m.text, m.err ? "err" : "", id);
     } else if (m.type === "input") {
       if (!run) return;
       run.input = true;
       if (id === tid()) { syncInput(); inputEl.focus(); }
+      markTabs();
     } else if (m.type === "done") {
       if (!run) return;
       write("--- finished ---\n", "info", id);
       delete runs[id];
-      if (r.owner === id) r.owner = null;
-      syncInput(); updateUI();
+      if (slot.owner === id) slot.owner = null;
+      tabMark[id] = run.err && id !== tid() ? "err" : "";
+      if (run.err) {                  // remember where it failed; shown as a red marker while the code stays the same
+        const line = run.errLine || errLineFrom(run.key, run.errText);
+        if (line) { runErr[id] = { line, msg: errMsgFrom(run.errText), code: run.code }; if (id === tid()) renderMarks(); }
+      }
+      syncInput();
+      pump();
     }
   }
   // One canvas: the first tab that draws owns it while it runs. Other tabs keep running, without a window.
   function gfxAllowed(run, id) {
     if (gfxOwner === id) return true;
     if (!gfxOwner || !runs[gfxOwner]) { gfxOwner = id; return true; }
-    if (!run.gfxWarned) { run.gfxWarned = true; write("(The graphics window is in use by another tab, so this tab's drawing and sound are not shown.)\n", "info", id); }
+    // Second graphics program: refuse it with a clear message (text-only programs are never blocked).
+    write("This program draws in the graphics window, which another tab is using right now. Stop that tab first, then run this one again.\n", "err", id);
+    tabMark[id] = "err";
+    stopRun(id, true);
     return false;
   }
   function canvasFree() { return !gfxOwner || !runs[gfxOwner]; }
@@ -2535,10 +2741,21 @@ for i in range(1, 6):
   function run() {
     if (runBtn.disabled) return;
     const id = tid(), k = curKey();
-    clearOut(id);
+    clearOut(id); tabMark[id] = "";
+    delete runErr[id];
+    if (id === tid()) queueMarks(codeEl.value);
     if (LANGS[k].remote) { runRemote(k, id); return; }
-    runs[id] = { key: k, input: false, ctl: null };
-    rt[k].owner = id;
+    runs[id] = { key: k, input: false, ctl: null, slot: null, err: false, errText: "", errLine: 0, code: codeEl.value };   // the code as it was when Run was pressed
+    queue.push(id);
+    pump();
+    const run = runs[id];
+    if (run && !run.slot) write("Waiting for a free run slot (" + maxRun() + " programs at once)...\n", "info", id);
+    else if (run && run.slot.state !== "ready") write("Starting a new " + LANGS[k].name + " runner...\n", "info", id);
+    syncInput(); updateUI();
+  }
+  // The worker is ready: start the program in it.
+  function begin(id) {
+    const run = runs[id], s = run.slot, k = run.key;
     let canvas = null;
     if (canvasFree()) {
       gfxReset(k === "js" || k === "ts");
@@ -2547,16 +2764,15 @@ for i in range(1, 6):
       canvas = offc;
     }
     sndInit();
-    rt[k].gkeys.fill(0);
-    syncInput(); updateUI();
-    if (canvas) rt[k].worker.postMessage({ type: "run", tabId: id, code: codeEl.value, canvas }, [canvas]);
-    else rt[k].worker.postMessage({ type: "run", tabId: id, code: codeEl.value });
+    s.gkeys.fill(0);
+    if (canvas) s.worker.postMessage({ type: "run", tabId: id, code: run.code, canvas }, [canvas]);
+    else s.worker.postMessage({ type: "run", tabId: id, code: run.code });
   }
 
   function send() {
     const id = tid(), run = runs[id];
     if (!run || !run.input) return;
-    const r = rt[run.key];
+    const r = run.slot;
     if (!r) return;
     const enc = new TextEncoder().encode(inputEl.value).slice(0, 65536);
     write(inputEl.value + "\n", "info", id);
@@ -2709,7 +2925,7 @@ for i in range(1, 6):
     const L = LANGS[k], ctl = new AbortController();
     runs[id] = { key: k, input: false, ctl };
     if (canvasFree()) { gfxReset(false); sndReset(); gfxOwner = null; }
-    syncInput(); updateUI();
+    syncInput(); updateUI(); markTabs();
     write("Running " + L.name + " on the code server...\n", "info", id);
     try {
       const access = localStorage.getItem("cronoff-access") || "";
@@ -2737,7 +2953,7 @@ for i in range(1, 6):
       clearOut(id);
       write(navigator.onLine ? "Could not reach the code server.\n" : L.name + " needs internet. You are offline.\n", "err", id);
     } finally {
-      if (runs[id] && runs[id].ctl === ctl) { delete runs[id]; syncInput(); updateUI(); }
+      if (runs[id] && runs[id].ctl === ctl) { delete runs[id]; syncInput(); updateUI(); markTabs(); }
     }
   }
   window.addEventListener("online", () => updateUI());
@@ -2769,11 +2985,19 @@ for i in range(1, 6):
     const run = runs[id];
     if (!run) return;
     delete runs[id];
+    dropFromQueue(id);
+    tabMark[id] = "";
     if (!quiet) write("--- stopped ---\n", "info", id);
     if (gfxOwner === id) sndReset();
     syncInput();
-    if (LANGS[run.key].remote) { if (run.ctl) run.ctl.abort(); updateUI(); return; }
-    startRt(run.key);
+    if (LANGS[run.key].remote) { if (run.ctl) run.ctl.abort(); updateUI(); markTabs(); return; }
+    const x = run.slot;
+    if (x) {
+      const p = pool[run.key];
+      if (p.indexOf(x) > 0) { x.worker.terminate(); x.worker = null; p.splice(p.indexOf(x), 1); }   // spare workers are dropped
+      else startSlot(run.key, x);                                                                      // the first one restarts
+    }
+    pump();
   }
   stopBtn.addEventListener("click", () => stopRun(tid()));
   $("send").addEventListener("click", send);
@@ -2787,10 +3011,10 @@ for i in range(1, 6):
 
   /* ---------- smart editing: wiring for the edit engine ---------- */
   const SKEY = "pyro-editset2";
-  const settings = { autoClose: true, enterRemoves: false, autoIndent: true, markers: true };
+  const settings = { autoClose: true, enterRemoves: false, autoIndent: true, markers: true, maxRuns: 2 };
   try {
     const s = JSON.parse(localStorage.getItem(SKEY) || "null");
-    if (s) for (const k in settings) if (typeof s[k] === "boolean") settings[k] = s[k];
+    if (s) for (const k in settings) if (typeof s[k] === typeof settings[k]) settings[k] = s[k];
   } catch {}
   marksOn = settings.markers;
   let ours = [], lastText = codeEl.value, engineBusy = false;
@@ -2856,6 +3080,13 @@ for i in range(1, 6):
       if (cb.dataset.set === "markers") { marksOn = cb.checked; queueMarks(codeEl.value); }
       try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch {}
     });
+  });
+  const maxSel = $("maxRuns");
+  maxSel.value = String(Math.max(1, Math.min(4, settings.maxRuns | 0 || 2)));
+  maxSel.addEventListener("change", () => {
+    settings.maxRuns = +maxSel.value;
+    try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch {}
+    pump();
   });
   function setPanelOpen(open) {
     setPanel.hidden = !open;
