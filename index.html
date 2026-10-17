@@ -112,7 +112,7 @@
   <label title="Off (default): Enter leaves the closers we added on the same line and starts a new line below. On: Enter deletes the closers we added."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
   <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
   <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). In Python, Enter on if/for/def/else... with no colon adds the colon. Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
-  <div style="font-size:11px;opacity:.6">Editor build: p2-friendly-errors</div>
+  <div style="font-size:11px;opacity:.6">Editor build: c1-tab-routing</div>
 </div>
 <main id="main" data-layout="right">
   <section id="editorSec">
@@ -147,12 +147,14 @@ for (const m of ["log", "info", "debug", "warn", "error", "trace", "group", "gro
   if (typeof console[m] !== "function") console[m] = () => {};
 }
 let i32, bytes;
+let TAB = null;   // id of the tab whose program this worker is running; stamped on every message
+function post(m) { m.tabId = TAB; postMessage(m); }
 const dec = new TextDecoder();
 function mk(err) {
   const b = [];
   const d = new TextDecoder();
   const flush = () => {
-    if (b.length) postMessage({ type: "out", err, text: d.decode(new Uint8Array(b.splice(0)), { stream: true }) });
+    if (b.length) post({ type: "out", err, text: d.decode(new Uint8Array(b.splice(0)), { stream: true }) });
   };
   return { flush, handle: (c) => { b.push(c & 255); if ((c & 255) === 10) flush(); } };
 }
@@ -162,7 +164,7 @@ const O = mk(false), E = mk(true);
 let obuf = "", oerr = false, otimer = 0;
 function flushOut() {
   if (otimer) { clearTimeout(otimer); otimer = 0; }
-  if (obuf) { postMessage({ type: "out", err: oerr, text: obuf }); obuf = ""; }
+  if (obuf) { post({ type: "out", err: oerr, text: obuf }); obuf = ""; }
 }
 function emit(text, err) {
   err = !!err;
@@ -175,9 +177,9 @@ function emit(text, err) {
 
 // ---- Graphics window: drawing commands are batched and sent to the page's canvas. ----
 let gi32 = null, gkeys = null, gq = [], gW = 640, gH = 480, gPoly = 0;
-function snd(cmd) { postMessage({ type: "snd", cmd }); }
+function snd(cmd) { post({ type: "snd", cmd }); }
 function gfxPush(c) { gq.push(c); if (gq.length > 4000) gfxFlush(); }
-function gfxFlush() { if (gq.length) { postMessage({ type: "gfx", cmds: gq }); gq = []; } }
+function gfxFlush() { if (gq.length) { post({ type: "gfx", cmds: gq }); gq = []; } }
 const GKEYS = { left: 37, up: 38, right: 39, down: 40, space: 32, enter: 13, escape: 27, esc: 27, shift: 16, ctrl: 17, tab: 9, backspace: 8 };
 // gfx.* works the same from Python, Lua and Ruby (positional arguments only).
 const gfxApi = {
@@ -230,7 +232,7 @@ const gfxApi = {
 // Blocks until the page sends a line of input (SharedArrayBuffer + Atomics).
 function readLine() {
   O.flush(); E.flush(); flushOut(); gfxFlush();
-  postMessage({ type: "input" });
+  post({ type: "input" });
   Atomics.wait(i32, 0, 0);
   const n = i32[1];
   const s = dec.decode(bytes.slice(0, n));
@@ -247,21 +249,22 @@ onmessage = async (ev) => {
     if (m.gsab) { gi32 = new Int32Array(m.gsab, 0, 4); gkeys = new Uint8Array(m.gsab, 16, 256); }
     try {
       const label = await LANG.init();
-      postMessage({ type: "ready", version: label });
+      post({ type: "ready", version: label });
     } catch (e) {
-      postMessage({ type: "fail", text: String(e) });
+      post({ type: "fail", text: String(e) });
     }
   } else if (m.type === "ev") {
     if (self.__gfxEvent) self.__gfxEvent(m.ev);
   } else if (m.type === "run") {
+    TAB = m.tabId === undefined ? null : m.tabId;
     try {
       await LANG.run(m.code, m.canvas);
     } catch (e) {
       O.flush(); flushOut();
-      postMessage({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
+      post({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
     } finally {
       O.flush(); E.flush(); flushOut(); gfxFlush();
-      postMessage({ type: "done" });
+      post({ type: "done" });
     }
   }
 };
@@ -529,7 +532,7 @@ const LANG = {
     };
     if (off) {
       let shown = false;
-      const show = () => { if (!shown) { shown = true; postMessage({ type: "gfxshow" }); } };
+      const show = () => { if (!shown) { shown = true; post({ type: "gfxshow" }); } };
       canvas = off;
       const og = off.getContext.bind(off);
       let c2d = null;
@@ -1803,11 +1806,13 @@ for i in range(1, 6):
   }
 
   const FKEY = "pyro-files";
-  let files = [{ name: "main.py", code: DEFAULT_CODE }], active = 0;
+  let fileSeq = 0;
+  function newFileId() { return "f" + Date.now().toString(36) + (fileSeq++).toString(36) + Math.random().toString(36).slice(2, 6); }
+  let files = [{ id: newFileId(), name: "main.py", code: DEFAULT_CODE }], active = 0;
   try {
     const s = JSON.parse(localStorage.getItem(FKEY) || "null");
     if (s && Array.isArray(s.files) && s.files.length) {
-      files = s.files.map((f) => ({ name: String(f.name || "main.py"), code: String(f.code || "") }));
+      files = s.files.map((f) => ({ id: newFileId(), name: String(f.name || "main.py"), code: String(f.code || "") }));
       active = Math.min(Math.max(0, s.active | 0), files.length - 1);
     } else {
       files[0].code = localStorage.getItem(KEY) || DEFAULT_CODE;
@@ -2279,18 +2284,22 @@ for i in range(1, 6):
     applyLayout();
     renderTabs();
     saveFiles();
+    paintOut();
+    syncInput();
     syncLang();
   }
   function addTab() {
     if (files.length >= MAX_TABS) return;
     const k = curKey();
-    files.push({ name: uniqueName("untitled." + (k ? LANGS[k].exts[0] : "py"), -1), code: "" });
+    files.push({ id: newFileId(), name: uniqueName("untitled." + (k ? LANGS[k].exts[0] : "py"), -1), code: "" });
     switchTo(files.length - 1);
     codeEl.focus();
   }
   function closeTab(i) {
     if (files.length < 2) return;
     if (!confirm('Close "' + files[i].name + '"? Its code will be deleted.')) return;
+    stopRun(files[i].id, true);
+    delete bufs[files[i].id];
     files.splice(i, 1);
     if (i < active) active -= 1;
     active = Math.min(active, files.length - 1);
@@ -2381,11 +2390,39 @@ for i in range(1, 6):
   });
 
   /* ---------- output + worker ---------- */
-  function write(text, cls) {
+  // Every tab owns its console: bufs[tabId] = [{text, cls}...]. Only the active tab's buffer is drawn in #out.
+  const OUT_MAX = 2000, OUT_CHARS = 400000;
+  const bufs = {};
+  function tid() { return files[active].id; }
+  function bufOf(id) { return bufs[id] || (bufs[id] = { items: [], chars: 0 }); }
+  function spanOf(it) {
     const span = document.createElement("span");
-    if (cls) span.className = cls;
-    span.textContent = text;
-    outEl.appendChild(span);
+    if (it.cls) span.className = it.cls;
+    span.textContent = it.text;
+    return span;
+  }
+  function write(text, cls, id) {
+    id = id || tid();
+    const b = bufOf(id), it = { text, cls: cls || "" };
+    b.items.push(it); b.chars += text.length;
+    let cut = 0;
+    while (b.items.length - cut > 1 && (b.items.length - cut > OUT_MAX || b.chars > OUT_CHARS)) b.chars -= b.items[cut++].text.length;
+    if (cut) b.items.splice(0, cut);
+    if (id !== tid()) return;
+    outEl.appendChild(spanOf(it));
+    for (let c = cut; c > 0 && outEl.firstChild; c--) outEl.removeChild(outEl.firstChild);
+    outEl.scrollTop = outEl.scrollHeight;
+  }
+  function clearOut(id) {
+    id = id || tid();
+    bufs[id] = { items: [], chars: 0 };
+    if (id === tid()) outEl.textContent = "";
+  }
+  function paintOut() {   // show the active tab's console
+    const frag = document.createDocumentFragment();
+    for (const it of bufOf(tid()).items) frag.appendChild(spanOf(it));
+    outEl.textContent = "";
+    outEl.appendChild(frag);
     outEl.scrollTop = outEl.scrollHeight;
   }
 
@@ -2393,8 +2430,16 @@ for i in range(1, 6):
   let serverReady = false;   // is a code server connected? (only then are server languages offered)
   const rt = {};          // one runtime per language: { worker, i32, bytes, state, label }
   const offline = {};     // per language: cached for offline use?
-  let running = null;     // language key that is running right now
+  const runs = {};        // tabId -> { key, input, ctl }: the tabs that are running right now
+  let gfxOwner = null;    // tabId that owns the one graphics canvas (and sound)
   function hideInput() { inputRow.classList.remove("show"); inputEl.value = ""; }
+  // The input row belongs to the active tab: show it only if that tab is waiting for input.
+  function syncInput() {
+    const run = runs[tid()];
+    if (run && run.input) { if (!inputRow.classList.contains("show")) inputRow.classList.add("show"); }
+    else hideInput();
+  }
+  function gRt() { const run = gfxOwner && runs[gfxOwner]; return run ? rt[run.key] : null; }
   function curKey() { return langOf(files[active].name); }
 
   function workerSource(key) {
@@ -2404,18 +2449,21 @@ for i in range(1, 6):
 
   function updateUI() {
     const k = curKey(), r = k && rt[k];
+    const me = tid(), run = runs[me];
+    const busyBy = r && r.owner && r.owner !== me ? r.owner : null;   // another tab is using this language's worker
     const nm = k ? LANGS[k].name : "Code";
     codeEl.setAttribute("aria-label", nm + " code (Ctrl+Enter to run)");
-    inputEl.setAttribute("aria-label", (running ? LANGS[running].name : nm) + " input");
+    inputEl.setAttribute("aria-label", (run ? LANGS[run.key].name : nm) + " input");
     langSel.value = k || "";
-    langSel.disabled = !!running;
+    langSel.disabled = !!run;
     const rem = k && LANGS[k].remote;
     stdinBox.style.display = rem ? "block" : "none";
-    runBtn.disabled = !!running || (rem ? (!serverReady || !navigator.onLine) : (!r || r.state !== "ready"));
-    stopBtn.disabled = !running;
+    runBtn.disabled = !!run || !!busyBy || (rem ? (!serverReady || !navigator.onLine) : (!r || r.state !== "ready"));
+    stopBtn.disabled = !run;
     let t;
     if (rem && !serverReady) t = nm + " needs a code server, which is not connected.";
     else if (rem) t = navigator.onLine ? nm + " \u00b7 runs on the code server (needs internet)" : nm + " needs internet (code server). You are offline.";
+    else if (busyBy) t = nm + " is busy running another file. Wait for it or stop it there.";
     else if (!crossOriginIsolated) t = "Missing vercel.json headers. Upload vercel.json and redeploy.";
     else if (!k) t = "Unknown file type. Rename it to " + EXT_LIST + ".";
     else if (!r || r.state === "loading") t = "Loading " + nm + "...";
@@ -2438,7 +2486,7 @@ for i in range(1, 6):
     r.worker = new Worker(url);
     r.worker.onmessage = (ev) => onMsg(key, ev);
     r.worker.postMessage({ type: "init", sab, gsab: r.gsab });
-    r.state = "loading"; r.label = "";
+    r.state = "loading"; r.label = ""; r.owner = null;
     updateUI();
   }
   // Load the runtime for the open file's language (once; retried if it failed).
@@ -2449,49 +2497,70 @@ for i in range(1, 6):
   }
 
   function onMsg(key, ev) {
-    const m = ev.data, r = rt[key];
+    const m = ev.data, r = rt[key], id = m.tabId, run = id ? runs[id] : null;
     if (m.type === "ready") {
       r.state = "ready"; r.label = m.version;
       updateUI();
     } else if (m.type === "fail") {
       r.state = "fail";
       updateUI();
-    } else if (m.type === "gfx") {
-      gfxApply(m.cmds);
-    } else if (m.type === "gfxshow") {
-      gfxShow();
-    } else if (m.type === "snd") {
-      sndApply(m.cmd);
+    } else if (m.type === "gfx" || m.type === "gfxshow" || m.type === "snd") {
+      if (!run || !gfxAllowed(run, id)) return;
+      if (m.type === "gfx") gfxApply(m.cmds);
+      else if (m.type === "gfxshow") gfxShow();
+      else sndApply(m.cmd);
     } else if (m.type === "out") {
-      write(m.text, m.err ? "err" : "");
+      if (run) write(m.text, m.err ? "err" : "", id);
     } else if (m.type === "input") {
-      inputRow.classList.add("show");
-      inputEl.focus();
+      if (!run) return;
+      run.input = true;
+      if (id === tid()) { syncInput(); inputEl.focus(); }
     } else if (m.type === "done") {
-      write("--- finished ---\n", "info");
-      running = null; hideInput(); updateUI();
+      if (!run) return;
+      write("--- finished ---\n", "info", id);
+      delete runs[id];
+      if (r.owner === id) r.owner = null;
+      syncInput(); updateUI();
     }
   }
+  // One canvas: the first tab that draws owns it while it runs. Other tabs keep running, without a window.
+  function gfxAllowed(run, id) {
+    if (gfxOwner === id) return true;
+    if (!gfxOwner || !runs[gfxOwner]) { gfxOwner = id; return true; }
+    if (!run.gfxWarned) { run.gfxWarned = true; write("(The graphics window is in use by another tab, so this tab's drawing and sound are not shown.)\n", "info", id); }
+    return false;
+  }
+  function canvasFree() { return !gfxOwner || !runs[gfxOwner]; }
 
   function run() {
     if (runBtn.disabled) return;
-    const k = curKey();
-    if (LANGS[k].remote) { runRemote(k); return; }
-    running = k;
-    outEl.textContent = "";
-    gfxReset(k === "js" || k === "ts");
-    sndReset(); sndInit();
+    const id = tid(), k = curKey();
+    clearOut(id);
+    if (LANGS[k].remote) { runRemote(k, id); return; }
+    runs[id] = { key: k, input: false, ctl: null };
+    rt[k].owner = id;
+    let canvas = null;
+    if (canvasFree()) {
+      gfxReset(k === "js" || k === "ts");
+      sndReset();
+      gfxOwner = offc ? id : null;     // JavaScript takes the canvas now; other languages take it when they first draw
+      canvas = offc;
+    }
+    sndInit();
     rt[k].gkeys.fill(0);
-    updateUI();
-    if (offc) rt[k].worker.postMessage({ type: "run", code: codeEl.value, canvas: offc }, [offc]);
-    else rt[k].worker.postMessage({ type: "run", code: codeEl.value });
+    syncInput(); updateUI();
+    if (canvas) rt[k].worker.postMessage({ type: "run", tabId: id, code: codeEl.value, canvas }, [canvas]);
+    else rt[k].worker.postMessage({ type: "run", tabId: id, code: codeEl.value });
   }
 
   function send() {
-    const r = rt[running];
+    const id = tid(), run = runs[id];
+    if (!run || !run.input) return;
+    const r = rt[run.key];
     if (!r) return;
     const enc = new TextEncoder().encode(inputEl.value).slice(0, 65536);
-    write(inputEl.value + "\n", "info");
+    write(inputEl.value + "\n", "info", id);
+    run.input = false;
     r.bytes.set(enc);
     r.i32[1] = enc.length;
     Atomics.store(r.i32, 0, 1);
@@ -2571,27 +2640,27 @@ for i in range(1, 6):
       } catch {}
     }
   }
-  function sendEv(ev) { const r = rt[running]; if (r) r.worker.postMessage({ type: "ev", ev }); }
+  function sendEv(ev) { const r = gRt(); if (r) r.worker.postMessage({ type: "ev", ev }); }
   function gpos(e) {
     const b = gfxEl.getBoundingClientRect();
     return { x: Math.round((e.clientX - b.left) * gfxEl.width / (b.width || 1)), y: Math.round((e.clientY - b.top) * gfxEl.height / (b.height || 1)) };
   }
   ["mousemove", "mousedown", "mouseup", "click"].forEach((t) => gfxWrap.addEventListener(t, (e) => {
-    if (!running || e.target !== gfxEl) return;
-    const p = gpos(e), r = rt[running];
+    if (!gRt() || e.target !== gfxEl) return;
+    const p = gpos(e), r = gRt();
     if (r && r.gi32) { r.gi32[0] = p.x; r.gi32[1] = p.y; r.gi32[2] = e.buttons; }
     if (t === "mousedown") gfxEl.focus();
     sendEv({ type: t, x: p.x, y: p.y, offsetX: p.x, offsetY: p.y, clientX: p.x, clientY: p.y, button: e.button, buttons: e.buttons });
   }));
   gfxWrap.addEventListener("contextmenu", (e) => e.preventDefault());
   ["keydown", "keyup"].forEach((t) => gfxWrap.addEventListener(t, (e) => {
-    if (!running || e.key === "Tab" || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!gRt() || e.key === "Tab" || e.ctrlKey || e.metaKey || e.altKey) return;
     e.preventDefault();
-    const r = rt[running];
+    const r = gRt();
     if (r && r.gkeys) r.gkeys[e.keyCode & 255] = t === "keydown" ? 1 : 0;
     sendEv({ type: t, key: e.key, code: e.code, keyCode: e.keyCode, which: e.keyCode, repeat: e.repeat });
   }));
-  gfxWrap.addEventListener("focusout", () => { const r = rt[running]; if (r && r.gkeys) r.gkeys.fill(0); });
+  gfxWrap.addEventListener("focusout", () => { const r = gRt(); if (r && r.gkeys) r.gkeys.fill(0); });
 
   /* ---------- sound: beeps and audio files, played by the page ---------- */
   let actx = null;
@@ -2636,14 +2705,12 @@ for i in range(1, 6):
 
   /* ---------- code server: only for languages that cannot run in the browser ---------- */
   const stdinBox = $("stdinBox");
-  let remoteCtl = null;
-  async function runRemote(k) {
+  async function runRemote(k, id) {
     const L = LANGS[k], ctl = new AbortController();
-    remoteCtl = ctl; running = k;
-    outEl.textContent = "";
-    gfxReset(false); sndReset();
-    updateUI();
-    write("Running " + L.name + " on the code server...\n", "info");
+    runs[id] = { key: k, input: false, ctl };
+    if (canvasFree()) { gfxReset(false); sndReset(); gfxOwner = null; }
+    syncInput(); updateUI();
+    write("Running " + L.name + " on the code server...\n", "info", id);
     try {
       const access = localStorage.getItem("cronoff-access") || "";
       const r = await fetch("/api/run", {
@@ -2652,25 +2719,25 @@ for i in range(1, 6):
         body: JSON.stringify({ lang: L.remote, code: codeEl.value, stdin: stdinBox.value }),
       });
       const j = await r.json().catch(() => ({}));
-      outEl.textContent = "";
+      clearOut(id);
       if (r.status === 401) {
         const c = prompt("This code server needs an access code:");
-        if (c) { localStorage.setItem("cronoff-access", c); write("Saved. Press Run again.\n", "info"); }
-        else write("Access code needed.\n", "err");
+        if (c) { localStorage.setItem("cronoff-access", c); write("Saved. Press Run again.\n", "info", id); }
+        else write("Access code needed.\n", "err", id);
       } else if (!r.ok) {
-        write((j.message || "The code server could not run this (" + r.status + ").") + "\n", "err");
+        write((j.message || "The code server could not run this (" + r.status + ").") + "\n", "err", id);
       } else {
-        if (j.stdout) write(j.stdout.endsWith("\n") ? j.stdout : j.stdout + "\n", "");
-        if (j.stderr) write(j.stderr.endsWith("\n") ? j.stderr : j.stderr + "\n", "err");
-        if (j.note) write(j.note + "\n", "info");
-        write("--- finished" + (j.code ? " (exit code " + j.code + ")" : "") + " ---\n", "info");
+        if (j.stdout) write(j.stdout.endsWith("\n") ? j.stdout : j.stdout + "\n", "", id);
+        if (j.stderr) write(j.stderr.endsWith("\n") ? j.stderr : j.stderr + "\n", "err", id);
+        if (j.note) write(j.note + "\n", "info", id);
+        write("--- finished" + (j.code ? " (exit code " + j.code + ")" : "") + " ---\n", "info", id);
       }
     } catch (e) {
       if (e && e.name === "AbortError") return;
-      outEl.textContent = "";
-      write(navigator.onLine ? "Could not reach the code server.\n" : L.name + " needs internet. You are offline.\n", "err");
+      clearOut(id);
+      write(navigator.onLine ? "Could not reach the code server.\n" : L.name + " needs internet. You are offline.\n", "err", id);
     } finally {
-      if (remoteCtl === ctl) { remoteCtl = null; running = null; updateUI(); }
+      if (runs[id] && runs[id].ctl === ctl) { delete runs[id]; syncInput(); updateUI(); }
     }
   }
   window.addEventListener("online", () => updateUI());
@@ -2690,26 +2757,28 @@ for i in range(1, 6):
   buildLangOptions();
   // Picking a language swaps the open file's extension (the language always follows the extension).
   langSel.addEventListener("change", () => {
-    if (running || !langSel.value) { updateUI(); return; }
+    if (runs[tid()] || !langSel.value) { updateUI(); return; }
     files[active].name = uniqueName(splitExt(files[active].name)[0] + "." + LANGS[langSel.value].exts[0], active);
     saveFiles(); renderTabs(); refresh(); syncLang();
     codeEl.focus();
   });
 
   runBtn.addEventListener("click", run);
-  stopBtn.addEventListener("click", () => {
-    if (!running) return;
-    const k = running;
-    running = null;
-    write("--- stopped ---\n", "info");
-    sndReset();
-    hideInput();
-    if (LANGS[k].remote) { if (remoteCtl) remoteCtl.abort(); remoteCtl = null; updateUI(); return; }
-    startRt(k);
-  });
+  // Stops one tab's run. A language worker can only be stopped by restarting it; no other tab shares it yet.
+  function stopRun(id, quiet) {
+    const run = runs[id];
+    if (!run) return;
+    delete runs[id];
+    if (!quiet) write("--- stopped ---\n", "info", id);
+    if (gfxOwner === id) sndReset();
+    syncInput();
+    if (LANGS[run.key].remote) { if (run.ctl) run.ctl.abort(); updateUI(); return; }
+    startRt(run.key);
+  }
+  stopBtn.addEventListener("click", () => stopRun(tid()));
   $("send").addEventListener("click", send);
   inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
-  $("clear").addEventListener("click", () => { outEl.textContent = ""; });
+  $("clear").addEventListener("click", () => clearOut(tid()));
   $("reset").addEventListener("click", () => {
     const code = "";
     codeEl.value = code; refresh(); applyLayout();
