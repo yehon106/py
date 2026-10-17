@@ -90,6 +90,7 @@
   #setPanel[hidden] { display: none; }
   #setPanel label { display: flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
   #setPanel input { accent-color: var(--accent); }
+  #setPanel button { font: inherit; font-size: 12px; padding: 4px 8px; text-align: left; }
   #setPanel select { font: inherit; background: var(--edit); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
   #stdinBox { display: none; width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 13px; padding: 6px 10px; color: var(--ink); background: var(--edit); border: 0; border-bottom: 1px solid var(--line); outline: none; }
   #gfxWrap { display: none; flex: 0 0 auto; max-height: 75%; overflow: auto; background: #000; border-bottom: 1px solid var(--line); }
@@ -116,12 +117,14 @@
   <span id="status">Loading Cronoff...</span>
 </header>
 <div id="setPanel" role="group" aria-label="Editor settings" hidden>
+  <label title="On: every tab can use the others. Python: import utils (utils.py). JavaScript and TypeScript: import / export or require(&quot;./utils.js&quot;). Lua: require(&quot;utils&quot;). Other tabs' files (text, json) can be opened too in Python. Off: each tab runs alone."><input type="checkbox" data-set="linkTabs"> Tabs work together (import each other)</label>
+  <button id="gameBtn" title="Adds 7 tabs: a complete little game (Star Dodger) built from several files that import each other. Run the game.js tab.">Add the example game (7 tabs)</button>
   <label title="Typing ( [ { or a quote adds the closing one"><input type="checkbox" data-set="autoClose"> Auto-close brackets and quotes</label>
   <label title="Off (default): Enter leaves the closers we added on the same line and starts a new line below. On: Enter deletes the closers we added."><input type="checkbox" data-set="enterRemoves"> Enter removes our closer</label>
   <label title="Underline problems such as unmatched brackets and unclosed strings in red, with a message bar under the editor"><input type="checkbox" data-set="markers"> Red markers</label>
   <label title="How many programs may run at the same time in different tabs. More runs need more memory; phones are held to 2."><span>Runs at once</span> <select id="maxRuns" aria-label="Runs at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
   <label title="Enter keeps the indent (and adds 4 after a line ending in : or an opening bracket). In Python, Enter on if/for/def/else... with no colon adds the colon. Backspace in leading spaces removes 4. Tab and Shift+Tab indent and un-indent."><input type="checkbox" data-set="autoIndent"> Auto-indent</label>
-  <div style="font-size:11px;opacity:.6">Editor build: p4-p3-checks</div>
+  <div style="font-size:11px;opacity:.6">Editor build: tabs-together-game</div>
 </div>
 <main id="main" data-layout="right">
   <section id="editorSec">
@@ -156,7 +159,9 @@ for (const m of ["log", "info", "debug", "warn", "error", "trace", "group", "gro
   if (typeof console[m] !== "function") console[m] = () => {};
 }
 let i32, bytes;
-let TAB = null;   // id of the tab whose program this worker is running; stamped on every message
+let TAB = null;
+let PROJECT = [];   // every tab as {name, code}, when "Tabs work together" is on
+   // id of the tab whose program this worker is running; stamped on every message
 function post(m) { m.tabId = TAB; postMessage(m); }
 const dec = new TextDecoder();
 function mk(err) {
@@ -271,11 +276,12 @@ onmessage = async (ev) => {
     postMessage({ type: "check", tabId: m.tabId, seq: m.seq, problems });
   } else if (m.type === "run") {
     TAB = m.tabId === undefined ? null : m.tabId;
+    PROJECT = m.project || [];
     try {
       await LANG.run(m.code, m.canvas);
     } catch (e) {
       O.flush(); flushOut();
-      if (typeof errLineOf === "function") { const n = errLineOf(e); if (n) post({ type: "errline", line: n }); }
+      if (typeof errLineOf === "function") { const n = errLineOf(e); if (n) post({ type: "errline", line: n, file: self.__errFile || "" }); }
       post({ type: "out", err: true, text: String((e && e.message) || e) + "\n" });
     } finally {
       O.flush(); E.flush(); flushOut(); gfxFlush();
@@ -371,8 +377,19 @@ const LANG = {
     try {
       // pygame, turtle and gfx are built in here; do not download the real ones
       let found = [];
+      const own = new Set();
+      if (PROJECT.length) {      // tabs work together: every tab becomes a file next to the program, so `import utils` finds utils.py
+        const mods = [];
+        for (const f of PROJECT) {
+          if (!/^[\w.\-]+$/.test(f.name)) continue;
+          try { pyodide.FS.writeFile("/home/pyodide/" + f.name, f.code); } catch (e) {}
+          const mm = /^([A-Za-z_]\w*)\.py$/.exec(f.name);
+          if (mm) { mods.push(mm[1]); own.add(mm[1]); }
+        }
+        pyodide.runPython("import sys, importlib\nfor _n in " + JSON.stringify(mods) + ":\n    sys.modules.pop(_n, None)\nif '/home/pyodide' not in sys.path:\n    sys.path.insert(0, '/home/pyodide')\nimportlib.invalidate_caches()");
+      }
       try { found = pyodide.pyodide_py.code.find_imports(code).toJs(); } catch (e) {}
-      const need = found.filter((n) => !["pygame", "turtle", "gfx"].includes(n));
+      const need = found.filter((n) => !["pygame", "turtle", "gfx"].includes(n) && !own.has(n));
       if (need.length) await pyodide.loadPackagesFromImports(need.map((n) => "import " + n).join("\n"));
       code = await pyodide.globals.get("_cronoff_prep")(code);
       await pyodide.runPythonAsync(code, { globals: g });
@@ -424,9 +441,14 @@ function ins(v, d, seen) {
   return pre + open + "\n" + items.map((s) => pad + s).join(",\n") + "\n" + "  ".repeat(d) + close;
 }
 // Line of the user's code that a runtime error came from (the code runs inside a function that adds 2 lines on top).
+// self.__errFile = the tab the error is in when it is not the one that was run ("" = the run one).
 function errLineOf(e) {
-  const m = /<anonymous>:(\d+):\d+/.exec(String((e && e.stack) || ""));
-  return m ? Math.max(0, +m[1] - 2) : 0;
+  self.__errFile = "";
+  if (e && e.cronoffAt) { self.__errFile = e.cronoffAt.file; return e.cronoffAt.line; }
+  const st = String((e && e.stack) || "");
+  const a = /<anonymous>:(\d+):\d+/.exec(st), b = /cronoff-mod:([^\s:()]+):(\d+):\d+/.exec(st);
+  if (b && (!a || b.index < a.index)) { self.__errFile = b[1]; return Math.max(0, +b[2] - 2); }
+  return a ? Math.max(0, +a[1] - 2) : 0;
 }
 // Syntax check with the sucrase parser (the same file that removes TypeScript types). Loaded on first use.
 let sucraseBad = false;
@@ -437,7 +459,7 @@ function sucraseCheck(code, transforms) {
   catch (e) { return e && e.loc ? [{ line: e.loc.line, col: e.loc.column, msg: String(e.message).replace(/\s*\(\d+:\d+\)\s*$/, "") }] : []; }
 }
 function report(e) {
-  { const n = errLineOf(e); if (n) post({ type: "errline", line: n }); }
+  { const n = errLineOf(e); if (n) post({ type: "errline", line: n, file: self.__errFile || "" }); }
   emit((e && e.name ? e.name + ": " + e.message : ins(e, 0, [])) + "\n", true);
 }
 
@@ -635,8 +657,39 @@ const LANG = {
     const win = { addEventListener: addL, removeEventListener: rmL, requestAnimationFrame: raf, cancelAnimationFrame: ct, innerWidth: 640, innerHeight: 480, Image: Img, Audio: Aud };
 
     try {
-      const fn = new AsyncFunction("console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "canvas", "ctx", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", "gfx", "Image", "Audio", "beep", code);
-      await fn(con, inp, inp, alertFn, st, si, ct, ct, canvas, ctx, doc, win, raf, ct, gfxApi, Img, Aud, beep);
+      const gN = ["console", "input", "prompt", "alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "canvas", "ctx", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", "gfx", "Image", "Audio", "beep"];
+      const gV = [con, inp, inp, alertFn, st, si, ct, ct, canvas, ctx, doc, win, raf, ct, gfxApi, Img, Aud, beep];
+      // Tabs that work together: require("./other.js") and import / export between tabs.
+      const proj = PROJECT, cache = {};
+      const nameList = () => proj.map((f) => f.name).join(", ");
+      const prep = (src, name) => {
+        if (!proj.length) return src;
+        const ts = /\.ts$/.test(name);
+        if (!ts && !/^\s*(import|export)\b/m.test(src)) return src;       // a plain script stays as it is
+        try {
+          if (typeof sucrase === "undefined") importScripts(BASE + "ts.js");
+          return sucrase.transform(src, { transforms: ts ? ["typescript", "imports"] : ["imports"] }).code;
+        } catch (e) {
+          const err = new Error((name ? name + ": " : "") + String((e && e.message) || e));
+          if (e && e.loc) err.cronoffAt = { file: name === "main" ? "" : name, line: e.loc.line };
+          throw err;
+        }
+      };
+      const req = (spec) => {
+        const want = String(spec).replace(/^\.?\//, "");
+        if (!proj.length) throw new Error("Cannot find module '" + spec + "'. Turn on \"Tabs work together\" in the settings (the gear).");
+        const f = proj.find((x) => [want, want + ".js", want + ".ts", want + ".json", want + "/index.js"].includes(x.name));
+        if (!f) throw new Error("Cannot find module '" + spec + "'. The tabs are: " + nameList());
+        if (cache[f.name]) return cache[f.name].exports;
+        if (/\.json$/.test(f.name)) return (cache[f.name] = { exports: JSON.parse(f.code) }).exports;
+        const mod = cache[f.name] = { exports: {} };
+        const fnm = new Function("require", "module", "exports", ...gN, prep(f.code, f.name) + "\n//# sourceURL=cronoff-mod:" + f.name);
+        fnm.call(mod.exports, req, mod, mod.exports, ...gV);
+        return mod.exports;
+      };
+      const me = { exports: {} };
+      const fn = new AsyncFunction(...gN, "require", "module", "exports", prep(code, "main"));
+      await fn(...gV, req, me, me.exports);
       if (live.size) await new Promise((r) => { waiter = r; });
     } catch (e) {
       report(e);
@@ -732,6 +785,12 @@ const LANG = {
       lua.global.set("__in", (p) => readLine());
       lua.global.set("gfx", gfxApi);
       await lua.doString(PRELUDE);
+      if (PROJECT.length) {      // tabs work together: require("utils") loads utils.lua
+        const src = {};
+        for (const f of PROJECT) { const mm = /^([\w.\-]+)\.lua$/.exec(f.name); if (mm) src[mm[1]] = f.code; }
+        lua.global.set("__proj", (n) => src[String(n)] || null);
+        await lua.doString("table.insert(package.searchers, 2, function(n) local s = __proj(n) if s then return load(s, '=' .. n) end return nil end)");
+      }
       await lua.global.loadString(code, "=main");
       await lua.global.run();
     } finally {
@@ -1611,6 +1670,430 @@ module Gfx
 end
 </script>
 
+<script type="text/plain" data-game="game.js">
+// STAR DODGER - run THIS tab. Click the game window first (so it gets the keyboard), then press Enter.
+// The other tabs are parts of the game: config, input, sound, effects, player, enemies.
+import { W, H, COLORS, PLAYER, KILLS_PER_LEVEL } from "./config.js";
+import { wasPressed, endFrame } from "./input.js";
+import { sfx, toggleMute, isMuted } from "./sound.js";
+import { Player, updateBullets, drawBullets } from "./player.js";
+import { enemies, pickups, resetEnemies, updateEnemies, damage, maybeDrop, drawEnemies, drawPickups } from "./enemies.js";
+import { updateEffects, explode, popup, addShake, drawBackground, beginShake, endShake, drawEffects } from "./effects.js";
+
+canvas.width = W;
+canvas.height = H;
+
+const player = new Player();
+let bullets = [];
+let state = "title";            // title -> play <-> paused -> over -> play ...
+let score = 0, best = 0, kills = 0, level = 1, banner = 0, overTime = 0, last = 0;
+
+function startGame() {
+  player.reset(); bullets = []; resetEnemies();
+  score = 0; kills = 0; level = 1; banner = 1.6;
+  state = "play";
+}
+
+const hits = (a, ar, b, br) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2 < (ar + br) ** 2;
+
+function update(dt) {
+  updateEffects(dt);
+  if (state === "title") { if (wasPressed("Enter")) startGame(); return; }
+  if (state === "over") { overTime += dt; if (overTime > 0.7 && wasPressed("Enter")) startGame(); return; }
+  if (wasPressed("KeyP", "Escape")) { state = state === "paused" ? "play" : "paused"; }
+  if (state === "paused") return;
+
+  banner -= dt;
+  player.update(dt, bullets);
+  updateBullets(bullets, dt);
+  updateEnemies(dt, level);
+
+  // bullets hit enemies
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if (!hits(b, 3, e, e.def.radius)) continue;
+      bullets.splice(i, 1);
+      if (damage(e)) {
+        enemies.splice(j, 1);
+        score += e.def.score; kills += 1;
+        explode(e.x, e.y, e.def.color, e.kind === "tank" ? 30 : 14);
+        popup(e.x, e.y - 10, "+" + e.def.score, COLORS.bullet);
+        addShake(e.kind === "tank" ? 8 : 3);
+        sfx.boom();
+        maybeDrop(e.x, e.y);
+        if (kills % KILLS_PER_LEVEL === 0) { level += 1; banner = 1.6; sfx.levelUp(); }
+      }
+      break;
+    }
+  }
+
+  // enemies crash into the player
+  for (let j = enemies.length - 1; j >= 0; j--) {
+    const e = enemies[j];
+    if (!hits(player, PLAYER.radius - 3, e, e.def.radius)) continue;
+    if (player.hit()) {
+      enemies.splice(j, 1);
+      explode(e.x, e.y, e.def.color, 18); explode(player.x, player.y, COLORS.ship, 24);
+      addShake(14); sfx.hit();
+      if (player.lives <= 0) {
+        state = "over"; overTime = 0; best = Math.max(best, score);
+        sfx.gameOver();
+        console.log("Game over. Score: " + score + ", level: " + level + ", best: " + best);
+        return;
+      }
+    }
+  }
+
+  // power-ups
+  for (let k = pickups.length - 1; k >= 0; k--) {
+    const p = pickups[k];
+    if (!hits(player, PLAYER.radius, p, 11)) continue;
+    pickups.splice(k, 1);
+    sfx.pickup();
+    if (p.type === "life") { player.lives = Math.min(PLAYER.maxLives, player.lives + 1); popup(p.x, p.y, "+1 life", COLORS.good); }
+    else { player.rapid = 8; popup(p.x, p.y, "Rapid fire!", COLORS.bullet); }
+  }
+}
+
+function text(str, x, y, size, color, align = "center", bold = true) {
+  ctx.font = (bold ? "bold " : "") + size + "px sans-serif";
+  ctx.textAlign = align;
+  ctx.fillStyle = color;
+  ctx.fillText(str, x, y);
+}
+
+function drawHud() {
+  text("Score " + score, 12, 24, 18, COLORS.text, "left");
+  text("Level " + level, W / 2, 24, 18, COLORS.dim);
+  for (let i = 0; i < player.lives; i++) {               // lives as little ships
+    const x = W - 20 - i * 22;
+    ctx.fillStyle = COLORS.ship;
+    ctx.beginPath(); ctx.moveTo(x, 10); ctx.lineTo(x + 8, 26); ctx.lineTo(x, 22); ctx.lineTo(x - 8, 26); ctx.closePath(); ctx.fill();
+  }
+  if (player.rapid > 0) {                                  // rapid-fire timer bar
+    ctx.fillStyle = "#2d3748"; ctx.fillRect(12, 34, 80, 5);
+    ctx.fillStyle = COLORS.bullet; ctx.fillRect(12, 34, 80 * Math.min(1, player.rapid / 8), 5);
+  }
+  if (isMuted()) text("muted (M)", W - 12, H - 10, 12, COLORS.dim, "right", false);
+}
+
+function draw() {
+  drawBackground(ctx);
+  beginShake(ctx);
+  if (state !== "title") {
+    drawPickups(ctx); drawEnemies(ctx); drawBullets(ctx, bullets);
+    if (state !== "over") player.draw(ctx);
+  }
+  drawEffects(ctx);
+  endShake(ctx);
+
+  if (state === "title") {
+    text("STAR DODGER", W / 2, 170, 52, COLORS.ship);
+    text("Arrow keys or WASD: move     Space: shoot", W / 2, 240, 17, COLORS.text, "center", false);
+    text("P: pause     M: sound on/off", W / 2, 266, 17, COLORS.text, "center", false);
+    text("Click this window, then press Enter", W / 2, 330, 20, COLORS.bullet);
+    if (best) text("Best: " + best, W / 2, 370, 16, COLORS.dim);
+    return;
+  }
+  drawHud();
+  if (state === "play" && banner > 0) text("Level " + level, W / 2, 200, 40, COLORS.good);
+  if (state === "paused") {
+    ctx.globalAlpha = 0.55; ctx.fillStyle = "#000000"; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+    text("PAUSED", W / 2, 230, 44, COLORS.text);
+    text("Press P to continue", W / 2, 270, 18, COLORS.dim, "center", false);
+  }
+  if (state === "over") {
+    text("GAME OVER", W / 2, 190, 52, COLORS.danger);
+    text("Score " + score + "     Best " + best, W / 2, 240, 22, COLORS.text);
+    text("Level " + level + "  -  " + kills + " enemies destroyed", W / 2, 272, 16, COLORS.dim, "center", false);
+    if (overTime > 0.7) text("Press Enter to play again", W / 2, 330, 20, COLORS.bullet);
+  }
+}
+
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000 || 0);
+  last = t;
+  update(dt);
+  draw();
+  endFrame();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/plain" data-game="config.js">
+// Star Dodger - settings. Change a number here to change how the whole game feels.
+// (This game is split over several tabs. "Tabs work together" lets them import each other.)
+export const W = 640;
+export const H = 480;
+
+export const COLORS = {
+  bg: "#070b1a", ship: "#4fd1c5", flame: "#f6ad55", bullet: "#faf089",
+  text: "#e2e8f0", dim: "#718096", danger: "#fc8181", good: "#68d391",
+};
+
+export const PLAYER = {
+  speed: 300,          // pixels per second
+  radius: 13,
+  cooldown: 0.2,       // seconds between shots
+  rapidCooldown: 0.08, // ... while rapid fire is on
+  lives: 3,
+  maxLives: 5,
+  invulnerable: 1.8,   // seconds of safety after a hit
+  bulletSpeed: 560,
+};
+
+export const ENEMIES = {
+  drifter: { hp: 1, speed: 80, radius: 13, score: 10, color: "#fc8181" },
+  zigzag: { hp: 2, speed: 95, radius: 14, score: 25, color: "#f6ad55" },
+  tank: { hp: 6, speed: 45, radius: 22, score: 80, color: "#b794f4" },
+};
+
+export const KILLS_PER_LEVEL = 10;
+
+// What a level looks like: how fast enemies arrive, how fast they fall, which kinds can appear.
+export function waveFor(level) {
+  return {
+    interval: Math.max(0.35, 1.1 - level * 0.08),
+    speedBoost: 1 + level * 0.06,
+    kinds: level < 2 ? ["drifter"] : level < 4 ? ["drifter", "zigzag"] : ["drifter", "zigzag", "tank"],
+  };
+}
+</script>
+<script type="text/plain" data-game="input.js">
+// Keyboard: which keys are held (isDown) and which were pressed this frame (wasPressed).
+const down = new Set();
+const pressed = new Set();
+
+window.addEventListener("keydown", (e) => {
+  if (!down.has(e.code)) pressed.add(e.code);
+  down.add(e.code);
+});
+window.addEventListener("keyup", (e) => down.delete(e.code));
+
+export function isDown(...codes) { return codes.some((c) => down.has(c)); }
+export function wasPressed(...codes) { return codes.some((c) => pressed.has(c)); }
+export function endFrame() { pressed.clear(); }   // call once at the end of every frame
+</script>
+<script type="text/plain" data-game="sound.js">
+// Sound effects: tiny beeps made with beep(frequency, milliseconds, volume, wave).
+let muted = false;
+const play = (f, ms, vol, wave) => { if (!muted) beep(f, ms, vol, wave); };
+
+export const sfx = {
+  shoot() { play(880, 40, 0.04, "square"); },
+  hit() { play(180, 140, 0.12, "sawtooth"); },
+  boom() { play(110, 120, 0.08, "sawtooth"); },
+  pickup() { play(660, 70, 0.08, "triangle"); setTimeout(() => play(990, 90, 0.08, "triangle"), 70); },
+  levelUp() { [523, 659, 784].forEach((f, i) => setTimeout(() => play(f, 110, 0.08, "square"), i * 110)); },
+  gameOver() { [330, 262, 196].forEach((f, i) => setTimeout(() => play(f, 220, 0.1, "sawtooth"), i * 220)); },
+};
+export function toggleMute() { muted = !muted; return muted; }
+export function isMuted() { return muted; }
+</script>
+<script type="text/plain" data-game="effects.js">
+// Things that only look nice: moving stars, explosion sparks, floating score text, screen shake.
+import { W, H, COLORS } from "./config.js";
+
+const stars = [];
+for (let i = 0; i < 70; i++) stars.push({ x: Math.random() * W, y: Math.random() * H, z: 0.3 + Math.random() * 0.9 });
+const sparks = [];
+const popups = [];
+let shake = 0;
+
+export function updateEffects(dt) {
+  for (const s of stars) {
+    s.y += 80 * s.z * dt;
+    if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+  }
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const p = sparks[i];
+    p.life -= dt;
+    if (p.life <= 0) { sparks.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+  }
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i];
+    p.life -= dt; p.y -= 30 * dt;
+    if (p.life <= 0) popups.splice(i, 1);
+  }
+  shake = Math.max(0, shake - dt * 30);
+}
+
+export function explode(x, y, color, n = 14) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 180, life = 0.4 + Math.random() * 0.4;
+    sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life, max: life, color });
+  }
+}
+export function popup(x, y, text, color = COLORS.text) { popups.push({ x, y, text, color, life: 0.9 }); }
+export function addShake(amount) { shake = Math.max(shake, amount); }
+
+export function drawBackground(ctx) {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, W, H);
+  for (const s of stars) {
+    ctx.globalAlpha = 0.3 + s.z * 0.5;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(s.x, s.y, s.z * 2, s.z * 2);
+  }
+  ctx.globalAlpha = 1;
+}
+export function beginShake(ctx) {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+}
+export function endShake(ctx) { ctx.restore(); }
+
+export function drawEffects(ctx) {
+  for (const p of sparks) {
+    ctx.globalAlpha = Math.max(0, p.life / p.max);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+  ctx.font = "bold 14px sans-serif";
+  ctx.textAlign = "center";
+  for (const p of popups) {
+    ctx.globalAlpha = Math.min(1, p.life * 2);
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.text, p.x, p.y);
+  }
+  ctx.globalAlpha = 1;
+}
+</script>
+<script type="text/plain" data-game="player.js">
+// The player's ship and its bullets.
+import { W, H, COLORS, PLAYER } from "./config.js";
+import { isDown } from "./input.js";
+import { sfx } from "./sound.js";
+
+export class Player {
+  constructor() { this.reset(); }
+  reset() {
+    this.x = W / 2; this.y = H - 70;
+    this.lives = PLAYER.lives;
+    this.cool = 0; this.rapid = 0;
+    this.inv = PLAYER.invulnerable;   // a moment of safety at the start
+  }
+  update(dt, bullets) {
+    let dx = 0, dy = 0;
+    if (isDown("ArrowLeft", "KeyA")) dx -= 1;
+    if (isDown("ArrowRight", "KeyD")) dx += 1;
+    if (isDown("ArrowUp", "KeyW")) dy -= 1;
+    if (isDown("ArrowDown", "KeyS")) dy += 1;
+    if (dx && dy) { dx *= 0.7071; dy *= 0.7071; }   // same speed in every direction
+    this.x = Math.min(W - PLAYER.radius, Math.max(PLAYER.radius, this.x + dx * PLAYER.speed * dt));
+    this.y = Math.min(H - PLAYER.radius, Math.max(PLAYER.radius, this.y + dy * PLAYER.speed * dt));
+    this.cool -= dt; this.rapid -= dt; this.inv -= dt;
+    if (isDown("Space") && this.cool <= 0) {
+      bullets.push({ x: this.x, y: this.y - 14, vy: -PLAYER.bulletSpeed });
+      this.cool = this.rapid > 0 ? PLAYER.rapidCooldown : PLAYER.cooldown;
+      sfx.shoot();
+    }
+  }
+  // Returns true if the hit counted (not while the ship is blinking).
+  hit() {
+    if (this.inv > 0) return false;
+    this.lives -= 1;
+    this.inv = PLAYER.invulnerable;
+    return true;
+  }
+  draw(ctx) {
+    if (this.inv > 0 && Math.floor(this.inv * 10) % 2 === 0) return;   // blink
+    const { x, y } = this;
+    ctx.fillStyle = COLORS.flame;
+    ctx.beginPath(); ctx.moveTo(x - 5, y + 10); ctx.lineTo(x, y + 18 + Math.random() * 8); ctx.lineTo(x + 5, y + 10); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = COLORS.ship;
+    ctx.beginPath(); ctx.moveTo(x, y - 16); ctx.lineTo(x + 13, y + 12); ctx.lineTo(x, y + 6); ctx.lineTo(x - 13, y + 12); ctx.closePath(); ctx.fill();
+  }
+}
+
+export function updateBullets(bullets, dt) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    bullets[i].y += bullets[i].vy * dt;
+    if (bullets[i].y < -10) bullets.splice(i, 1);
+  }
+}
+export function drawBullets(ctx, bullets) {
+  ctx.fillStyle = COLORS.bullet;
+  for (const b of bullets) ctx.fillRect(b.x - 2, b.y - 7, 4, 12);
+}
+</script>
+<script type="text/plain" data-game="enemies.js">
+// Enemies that fall from the top, and the power-ups some of them drop.
+import { W, H, ENEMIES, waveFor } from "./config.js";
+
+export const enemies = [];
+export const pickups = [];
+let timer = 1;
+
+export function resetEnemies() { enemies.length = 0; pickups.length = 0; timer = 1; }
+
+function spawn(wave) {
+  const kind = wave.kinds[Math.floor(Math.random() * wave.kinds.length)];
+  const def = ENEMIES[kind];
+  const x = def.radius + Math.random() * (W - def.radius * 2);
+  enemies.push({ kind, def, x, baseX: x, y: -def.radius, hp: def.hp, t: Math.random() * 6, flash: 0, boost: wave.speedBoost });
+}
+
+export function updateEnemies(dt, level) {
+  const wave = waveFor(level);
+  timer -= dt;
+  if (timer <= 0) { spawn(wave); timer = wave.interval * (0.6 + Math.random() * 0.8); }
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    e.t += dt; e.flash -= dt;
+    e.y += e.def.speed * e.boost * dt;
+    if (e.kind === "zigzag") e.x = Math.min(W - 14, Math.max(14, e.baseX + Math.sin(e.t * 3) * 70));
+    if (e.y > H + 30) enemies.splice(i, 1);   // got away (no penalty)
+  }
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    pickups[i].y += 70 * dt;
+    if (pickups[i].y > H + 20) pickups.splice(i, 1);
+  }
+}
+
+// Returns true when the enemy is destroyed.
+export function damage(enemy, amount = 1) {
+  enemy.hp -= amount;
+  enemy.flash = 0.08;
+  return enemy.hp <= 0;
+}
+export function maybeDrop(x, y) {
+  if (Math.random() < 0.12) pickups.push({ x, y, type: Math.random() < 0.5 ? "rapid" : "life" });
+}
+
+export function drawEnemies(ctx) {
+  for (const e of enemies) {
+    const r = e.def.radius;
+    ctx.fillStyle = e.flash > 0 ? "#ffffff" : e.def.color;
+    ctx.beginPath();
+    if (e.kind === "drifter") ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+    else if (e.kind === "zigzag") { ctx.moveTo(e.x, e.y - r); ctx.lineTo(e.x + r, e.y); ctx.lineTo(e.x, e.y + r); ctx.lineTo(e.x - r, e.y); ctx.closePath(); }
+    else ctx.rect(e.x - r, e.y - r * 0.7, r * 2, r * 1.4);
+    ctx.fill();
+    ctx.fillStyle = "#1a202c";                      // eyes
+    ctx.fillRect(e.x - r * 0.45, e.y - 3, 4, 4);
+    ctx.fillRect(e.x + r * 0.45 - 4, e.y - 3, 4, 4);
+    if (e.def.hp > 1 && e.hp < e.def.hp) {          // health bar for the tough ones
+      ctx.fillStyle = "#2d3748"; ctx.fillRect(e.x - r, e.y - r - 8, r * 2, 4);
+      ctx.fillStyle = "#68d391"; ctx.fillRect(e.x - r, e.y - r - 8, (r * 2) * (e.hp / e.def.hp), 4);
+    }
+  }
+}
+export function drawPickups(ctx) {
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  for (const p of pickups) {
+    ctx.fillStyle = p.type === "life" ? "#68d391" : "#faf089";
+    ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1a202c";
+    ctx.fillText(p.type === "life" ? "+" : "R", p.x, p.y + 5);
+  }
+}
+</script>
 <script>
   const DEFAULT_CODE = `name = input("Your name? ")
 print(f"Hello, {name}!")
@@ -2697,7 +3180,7 @@ for i in range(1, 6):
       else if (m.type === "gfxshow") gfxShow();
       else sndApply(m.cmd);
     } else if (m.type === "errline") {
-      if (run) run.errLine = m.line | 0;
+      if (run) { run.errLine = m.line | 0; run.errFile = m.file || ""; }
     } else if (m.type === "check") {
       if (!checkWant || m.seq !== checkWant.seq || m.tabId !== tid() || codeEl.value !== checkWant.code) return;
       const v = codeEl.value;
@@ -2720,7 +3203,13 @@ for i in range(1, 6):
       tabMark[id] = run.err && id !== tid() ? "err" : "";
       if (run.err) {                  // remember where it failed; shown as a red marker while the code stays the same
         const line = run.errLine || errLineFrom(run.key, run.errText);
-        if (line) { runErr[id] = { line, msg: errMsgFrom(run.errText), code: run.code }; if (id === tid()) renderMarks(); }
+        const other = run.errFile ? files.find((f) => f.name === run.errFile) : null;   // the error may be in another tab
+        if (line && other) {
+          write("(The error is in " + other.name + ", line " + line + ".)\n", "err", id);
+          runErr[other.id] = { line, msg: errMsgFrom(run.errText), code: other.code };
+          if (other.id !== tid()) tabMark[other.id] = "err";
+          else renderMarks();
+        } else if (line) { runErr[id] = { line, msg: errMsgFrom(run.errText), code: run.code }; if (id === tid()) renderMarks(); }
       }
       syncInput();
       pump();
@@ -2745,7 +3234,8 @@ for i in range(1, 6):
     delete runErr[id];
     if (id === tid()) queueMarks(codeEl.value);
     if (LANGS[k].remote) { runRemote(k, id); return; }
-    runs[id] = { key: k, input: false, ctl: null, slot: null, err: false, errText: "", errLine: 0, code: codeEl.value };   // the code as it was when Run was pressed
+    runs[id] = { key: k, input: false, ctl: null, slot: null, err: false, errText: "", errLine: 0, errFile: "", code: codeEl.value,
+                 project: settings.linkTabs ? files.map((f) => ({ name: f.name, code: f.id === id ? codeEl.value : f.code })) : [] };   // the code as it was when Run was pressed
     queue.push(id);
     pump();
     const run = runs[id];
@@ -2765,8 +3255,8 @@ for i in range(1, 6):
     }
     sndInit();
     s.gkeys.fill(0);
-    if (canvas) s.worker.postMessage({ type: "run", tabId: id, code: run.code, canvas }, [canvas]);
-    else s.worker.postMessage({ type: "run", tabId: id, code: run.code });
+    if (canvas) s.worker.postMessage({ type: "run", tabId: id, code: run.code, project: run.project, canvas }, [canvas]);
+    else s.worker.postMessage({ type: "run", tabId: id, code: run.code, project: run.project });
   }
 
   function send() {
@@ -3011,7 +3501,7 @@ for i in range(1, 6):
 
   /* ---------- smart editing: wiring for the edit engine ---------- */
   const SKEY = "pyro-editset2";
-  const settings = { autoClose: true, enterRemoves: false, autoIndent: true, markers: true, maxRuns: 2 };
+  const settings = { autoClose: true, enterRemoves: false, autoIndent: true, markers: true, maxRuns: 2, linkTabs: true };
   try {
     const s = JSON.parse(localStorage.getItem(SKEY) || "null");
     if (s) for (const k in settings) if (typeof s[k] === typeof settings[k]) settings[k] = s[k];
@@ -3080,6 +3570,19 @@ for i in range(1, 6):
       if (cb.dataset.set === "markers") { marksOn = cb.checked; queueMarks(codeEl.value); }
       try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch {}
     });
+  });
+  // The example game: several tabs that import each other (needs "Tabs work together").
+  $("gameBtn").addEventListener("click", () => {
+    const parts = [...document.querySelectorAll("script[data-game]")];
+    const clash = parts.map((el) => el.dataset.game).filter((n) => files.some((f) => f.name.toLowerCase() === n.toLowerCase()));
+    if (clash.length) { alert("These tabs already exist: " + clash.join(", ") + ". Rename or close them first, because the game files import each other by name."); return; }
+    if (files.length + parts.length > MAX_TABS) { alert("The example game needs " + parts.length + " tabs and there is room for " + (MAX_TABS - files.length) + ". Close some tabs first."); return; }
+    for (const el of parts) files.push({ id: newFileId(), name: el.dataset.game, code: el.textContent.replace(/^\n/, "") });
+    settings.linkTabs = true;
+    setPanel.querySelectorAll("input[data-set]").forEach((cb) => { cb.checked = !!settings[cb.dataset.set]; });
+    try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch {}
+    setPanelOpen(false);
+    switchTo(files.findIndex((f) => f.name === "game.js"));
   });
   const maxSel = $("maxRuns");
   maxSel.value = String(Math.max(1, Math.min(4, settings.maxRuns | 0 || 2)));
